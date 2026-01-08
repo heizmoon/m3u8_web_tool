@@ -190,30 +190,59 @@
 
     // 3. 🧩 新增功能：本地多 MP4 合并
     async function mergeLocalMp4() {
-        try {
-            const files = await window.showOpenFilePicker({ multiple: true, types: [{ description: 'MP4 视频', accept: {'video/mp4': ['.mp4']} }] });
-            if (files.length < 2) return alert("请至少选择 2 个分段视频进行合并");
+    try {
+        const files = await window.showOpenFilePicker({ 
+            multiple: true, 
+            types: [{ description: '视频分段', accept: {'video/mp4': ['.mp4']} }] 
+        });
+        
+        if (files.length < 2) return alert("请至少选择 2 个文件");
 
-            document.getElementById('task-name').innerText = "🔗 正在拼合本地视频...";
-            let concatList = "";
-            for (let i = 0; i < files.length; i++) {
-                const file = await files[i].getFile();
-                const name = `local_${i}.mp4`;
-                await ffmpeg.writeFile(name, new Uint8Array(await file.arrayBuffer()));
-                concatList += `file '${name}'\n`;
-            }
+        // --- 核心优化：按文件名中的数字自动排序 ---
+        const fileHandles = await Promise.all(files.map(async (h) => {
+            const file = await h.getFile();
+            return { handle: h, name: file.name, file: file };
+        }));
 
-            await ffmpeg.writeFile('list.txt', new TextEncoder().encode(concatList));
-            await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'final_merged.mp4']);
-            
-            const data = await ffmpeg.readFile('final_merged.mp4');
-            downloadFile(data, "最终合集_Merged.mp4");
-            
-            // 清理本地合并残留
-            await ffmpeg.deleteFile('final_merged.mp4');
-            document.getElementById('task-name').innerText = "🎉 最终视频已导出！";
-        } catch (e) { log("合并失败: " + e.message); }
+        // 识别 Part_1, Part_2 进行自然排序
+        fileHandles.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true}));
+        
+        log(`合并顺序确认: ${fileHandles.map(f => f.name).join(' -> ')}`);
+
+        document.getElementById('task-name').innerText = "🔗 正在进行无损拼合...";
+        let concatList = "";
+
+        for (let i = 0; i < fileHandles.length; i++) {
+            const name = `m_${i}.mp4`;
+            // 将文件写入 WASM 虚拟系统
+            await ffmpeg.writeFile(name, new Uint8Array(await fileHandles[i].file.arrayBuffer()));
+            concatList += `file '${name}'\n`;
+        }
+
+        await ffmpeg.writeFile('list.txt', new TextEncoder().encode(concatList));
+        
+        // 使用 -safe 0 确保路径安全
+        await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'final.mp4']);
+        
+        const data = await ffmpeg.readFile('final.mp4');
+        const url = URL.createObjectURL(new Blob([data.buffer], {type:'video/mp4'}));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = "合并完成_Total.mp4";
+        a.click();
+
+        // 释放内存清理
+        for(let i=0; i<fileHandles.length; i++) await ffmpeg.deleteFile(`m_${i}.mp4`);
+        await ffmpeg.deleteFile('list.txt');
+        await ffmpeg.deleteFile('final.mp4');
+
+        document.getElementById('task-name').innerText = "✅ 最终视频已导出！";
+        btn.innerText = "选择文件夹并合并";
+    } catch (e) {
+        log("合并过程中断: " + e.message);
+        alert("合并失败，可能是因为文件总和超过了 2GB 的浏览器导出限制。建议分两批合并，或使用本地播放器。");
     }
+}
 
     function downloadFile(data, name) {
         const url = URL.createObjectURL(new Blob([data.buffer], {type:'video/mp4'}));
