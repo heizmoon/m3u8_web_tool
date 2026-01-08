@@ -93,15 +93,15 @@
 
         async function initSystem() {
             try {
-                // 1. 加载 ffmpeg.min.js
+                // 1. 加载 ffmpeg.js
                 log("加载 FFmpeg 引导脚本...");
                 const script = document.createElement('script');
-                script.src = '/ffmpeg.min.js';
+                script.src = '/ffmpeg.js';
                 document.head.appendChild(script);
                 await new Promise(r => script.onload = r);
 
                 const FF = window.FFmpegWASM || window.FFmpeg;
-                if (!FF) throw new Error("无法识别 FFmpeg 对象，请检查 ffmpeg.min.js 是否正确。");
+                if (!FF) throw new Error("无法识别 FFmpeg 对象，请检查 ffmpeg.js 是否正确。");
 
                 const ffmpeg = new FF.FFmpeg();
                 ffmpeg.on('log', ({ message }) => log(`[FFmpeg] ${message}`));
