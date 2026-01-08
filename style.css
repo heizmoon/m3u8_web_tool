@@ -329,3 +329,23 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* 给进度条增加流光动画，缓解等待焦虑 */
+.bar-fill {
+    width: 0%;
+    height: 100%;
+    background: linear-gradient(
+        90deg, 
+        var(--primary-color) 0%, 
+        #5caaff 50%, 
+        var(--primary-color) 100%
+    );
+    background-size: 200% 100%;
+    animation: flow 2s linear infinite; /* 始终保持流光，证明程序在运行 */
+    transition: width 0.4s ease-out;
+}
+
+@keyframes flow {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}

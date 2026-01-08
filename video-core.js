@@ -29,17 +29,41 @@ async function fetchWithProgress(url, name, estSize) {
     const resp = await fetch(url);
     const reader = resp.body.getReader();
     const total = +resp.headers.get('Content-Length') || estSize;
-    let loaded = 0; let chunks = [];
+    let loaded = 0;
+    let chunks = [];
+
     while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         chunks.push(value);
         loaded += value.length;
-        UI.updateProgress(`下载引擎: ${name}`, Math.min(Math.round((loaded/total)*100), 99));
-    }
-    return URL.createObjectURL(new Blob(chunks));
-}
 
+        // 计算物理数值
+        const loadedMB = (loaded / 1024 / 1024).toFixed(1);
+        const totalMB = (total / 1024 / 1024).toFixed(1);
+        
+        /**
+         * 优化：非线性进度映射
+         * 将真实的 0%-100% 下载进度映射到 UI 的 0%-92%
+         * 剩下的 8% 留给“浏览器缓冲区处理和内存写入”
+         */
+        const downloadPct = Math.round((loaded / total) * 92);
+        
+        UI.updateProgress(
+            `下载引擎: ${name} (${loadedMB}MB / ${totalMB}MB)`, 
+            downloadPct
+        );
+    }
+
+    // 下载彻底完成后，显示“正在校验与安装”并慢慢跳到 100%
+    UI.updateProgress(`校验并安装引擎 (${(total/1024/1024).toFixed(1)}MB)...`, 98);
+    
+    const blob = new Blob(chunks);
+    const blobURL = URL.createObjectURL(blob);
+    
+    UI.updateProgress(`${name} 加载完成`, 100);
+    return blobURL;
+}
 // 核心合并逻辑
 document.addEventListener('DOMContentLoaded', () => {
     const runBtn = document.getElementById('runBtn');
@@ -119,84 +143,46 @@ initCore();
  * 核心逻辑补全：本地 MP4 无损拼合
  * 对应 index.html 中的 mergeMp4Btn 按钮
  */
+// 在 video-core.js 中
 document.addEventListener('DOMContentLoaded', () => {
-    const mergeMp4Btn = document.getElementById('mergeMp4Btn');
-    if (!mergeMp4Btn) return;
+    const mergeBtn = document.getElementById('mergeMp4Btn');
+    if (!mergeBtn) return;
 
-    mergeMp4Btn.onclick = async () => {
-        const btn = mergeMp4Btn;
+    mergeBtn.onclick = async () => {
         try {
-            // 1. 让用户选择多个导出的 Part 文件
-            const fileHandles = await window.showOpenFilePicker({
-                multiple: true,
-                types: [{
-                    description: '视频分段文件',
-                    accept: { 'video/mp4': ['.mp4'] }
-                }]
-            });
-
-            if (fileHandles.length < 2) {
-                alert("请至少选择两个分段文件进行拼合");
-                return;
+            const files = await window.showOpenFilePicker({ multiple: true });
+            mergeBtn.disabled = true;
+            mergeBtn.innerText = "正在拼合...";
+            
+            UI.writeLog(`🔗 选中 ${files.length} 个分段，开始无损合并...`);
+            
+            let listTxt = "";
+            for (let i = 0; i < files.length; i++) {
+                const f = await files[i].getFile();
+                const vfsName = `m${i}.mp4`;
+                UI.updateProgress(`读取分段 ${i+1}/${files.length}`, Math.round((i/files.length)*100));
+                
+                await ffmpeg.writeFile(vfsName, new Uint8Array(await f.arrayBuffer()));
+                listTxt += `file '${vfsName}'\n`;
             }
 
-            // 锁定按钮，更新状态
-            btn.disabled = true;
-            btn.innerText = "拼合中...";
-            UI.writeLog(`🔗 开始拼合 ${fileHandles.length} 个文件...`);
-            UI.updateProgress("正在准备拼合数据...", 10);
-
-            // 2. 将选中的文件写入 WASM 虚拟文件系统，并生成文件清单
-            let concatList = "";
-            for (let i = 0; i < fileHandles.length; i++) {
-                const file = await fileHandles[i].getFile();
-                const vfsName = `merge_input_${i}.mp4`;
-                
-                UI.updateProgress(`读取文件: ${file.name}`, Math.round((i / fileHandles.length) * 80));
-                
-                const arrayBuffer = await file.arrayBuffer();
-                await ffmpeg.writeFile(vfsName, new Uint8Array(arrayBuffer));
-                
-                concatList += `file '${vfsName}'\n`;
-            }
-
-            // 3. 写入 FFmpeg 拼合清单文件
-            await ffmpeg.writeFile('concat_list.txt', new TextEncoder().encode(concatList));
-
-            // 4. 执行无损拼合指令
-            // -f concat: 使用合并协议
-            // -c copy: 无损流拷贝（不重编码，保护画质且速度极快）
-            UI.writeLog("🚀 正在执行无损串联，请稍候...");
-            await ffmpeg.exec([
-                '-f', 'concat', 
-                '-safe', '0', 
-                '-i', 'concat_list.txt', 
-                '-c', 'copy', 
-                'Final_Total_Video.mp4'
-            ]);
-
-            // 5. 读取合并后的结果并触发下载
-            UI.updateProgress("拼合完成，准备导出", 100);
-            const finalData = await ffmpeg.readFile('Final_Total_Video.mp4');
-            UI.downloadFile(finalData, "合并完成_Total_Video.mp4");
-
-            // 6. 清理内存，防止浏览器卡死
-            UI.writeLog("🧹 正在清理缓存内存...");
-            await ffmpeg.deleteFile('Final_Total_Video.mp4');
-            await ffmpeg.deleteFile('concat_list.txt');
-            for (let i = 0; i < fileHandles.length; i++) {
-                await ffmpeg.deleteFile(`merge_input_${i}.mp4`);
-            }
-
-            UI.writeLog("✅ 全体拼合成功！");
-
+            await ffmpeg.writeFile('list.txt', new TextEncoder().encode(listTxt));
+            
+            // 无损合并：-c copy 保护画质且速度极快
+            await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'Output_Total.mp4']);
+            
+            const data = await ffmpeg.readFile('Output_Total.mp4');
+            UI.downloadFile(data, "合并完成_Total.mp4");
+            
+            // 内存清理
+            await ffmpeg.deleteFile('Output_Total.mp4');
+            UI.writeLog("✅ 合并成功！");
         } catch (e) {
             UI.writeLog("❌ 拼合失败: " + e.message);
-            console.error(e);
         } finally {
-            btn.disabled = false;
-            btn.innerText = "🧩 选中本地 MP4 文件并拼合";
-            UI.updateProgress("等待下一次任务", 0);
+            mergeBtn.disabled = false;
+            mergeBtn.innerText = "🧩 选中本地 MP4 文件并拼合";
+            UI.updateProgress("就绪", 0);
         }
     };
 });
