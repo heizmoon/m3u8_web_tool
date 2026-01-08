@@ -2,39 +2,40 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>M3U8 极速合并工具 - 商业版</title>
+    <title>M3U8 极速合并</title>
     <script src="./ffmpeg.min.js"></script>
     <style>
-        body { font-family: sans-serif; background: #f4f7f6; padding: 40px; text-align: center; }
-        .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); display: inline-block; width: 400px; }
-        #log { background: #000; color: #0f0; padding: 10px; height: 150px; overflow-y: auto; text-align: left; font-size: 12px; margin-top: 15px; border-radius: 4px; }
-        .btn { background: #0070f3; color: white; border: none; padding: 12px 24px; border-radius: 5px; cursor: pointer; margin-top: 10px; width: 100%; }
-        .btn:disabled { background: #ccc; }
+        body { font-family: system-ui; text-align: center; padding: 50px; background: #f9f9f9; }
+        .box { background: white; padding: 30px; border-radius: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); display: inline-block; width: 400px; }
+        #log { background: #1a1a1a; color: #00ff00; padding: 15px; height: 150px; overflow-y: auto; text-align: left; font-size: 12px; margin-top: 20px; border-radius: 5px; font-family: monospace; }
+        .btn { background: #0070f3; color: white; border: none; padding: 12px 25px; border-radius: 5px; cursor: pointer; width: 100%; font-size: 16px; }
+        .btn:disabled { background: #ccc; cursor: not-allowed; }
     </style>
 </head>
 <body>
-    <div class="card">
-        <h3>🎬 M3U8 合并器</h3>
-        <div id="status" style="color: orange;">🔍 正在检测环境...</div>
-        <button id="workBtn" class="btn" disabled>选择文件夹并开始</button>
-        <div id="log">等待初始化...</div>
+    <div class="box">
+        <h3>🎬 视频合并工具</h3>
+        <p id="status" style="color: #666;">检测环境中...</p>
+        <button id="startBtn" class="btn" disabled>选择文件夹合并</button>
+        <div id="log">日志载入中...</div>
     </div>
 
     <script>
+        // 自动适配库版本
+        const FF = window.FFmpegWASM || window.FFmpeg;
+        const ffmpeg = new FF.FFmpeg();
+
         const log = (m) => { document.getElementById('log').innerText += `\n> ${m}`; };
         const status = document.getElementById('status');
 
-        // 1. 诊断脚本加载
-        window.onload = async () => {
-            const FF = window.FFmpegWASM || window.FFmpeg;
-            if (!FF) {
-                status.innerText = "❌ 脚本加载失败 (404 或拦截)";
-                log("错误：找不到 FFmpeg 库。请确认文件在根目录且未被拦截。");
-                return;
+        async function start() {
+            log("开始尝试加载内核...");
+            
+            // 检查跨域隔离
+            if (!crossOriginIsolated) {
+                log("⚠️ 警告：检测到未开启跨域隔离模式！");
+                log("请确保 vercel.json 已正确配置并部署。");
             }
-
-            const ffmpeg = new FF.FFmpeg();
-            log("库已识别，正在加载内核...");
 
             try {
                 await ffmpeg.load({
@@ -44,22 +45,25 @@
                 });
                 status.innerText = "✅ 内核就绪";
                 status.style.color = "green";
-                document.getElementById('workBtn').disabled = false;
+                document.getElementById('startBtn').disabled = false;
                 log("初始化成功！");
             } catch (e) {
-                status.innerText = "❌ 内核加载失败";
-                log("可能原因：缺少 vercel.json 或浏览器版本过旧。");
+                log("❌ 初始化出错：" + e.message);
                 console.error(e);
             }
+        }
 
-            document.getElementById('workBtn').onclick = async () => {
-                try {
-                    const dir = await window.showDirectoryPicker();
-                    log("开始处理：" + dir.name);
-                    // 此处插入之前的合并逻辑...
-                } catch (err) { log("操作取消"); }
-            };
+        document.getElementById('startBtn').onclick = async () => {
+            try {
+                const handle = await window.showDirectoryPicker();
+                log("已选择: " + handle.name);
+                // 具体的合并代码（读取 index.m3u8 等）...
+            } catch (err) {
+                log("取消操作");
+            }
         };
+
+        window.onload = start;
     </script>
 </body>
 </html>
