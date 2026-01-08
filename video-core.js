@@ -106,7 +106,18 @@ function parseM3u8Structure(content) {
 
 // 生成批次 M3U8
 function generateBatchM3u8(headers, segments, batchFilesSet) {
-    const outputLines = [...headers];
+    // 过滤掉原有的 ENDLIST，我们会在最后统一加
+    let outputLines = headers.filter(h => !h.includes('#EXT-X-ENDLIST'));
+    
+    // 强制确保第一行是 #EXTM3U
+    if (outputLines.length === 0 || !outputLines[0].startsWith('#EXTM3U')) {
+        outputLines.unshift('#EXTM3U');
+    }
+    
+    // 强制确保有版本号 (有些 FFmpeg 版本需要)
+    if (!outputLines.some(l => l.startsWith('#EXT-X-VERSION'))) {
+        outputLines.splice(1, 0, '#EXT-X-VERSION:3');
+    }
     
     for (const seg of segments) {
         if (batchFilesSet.has(seg.filename)) {
@@ -126,11 +137,7 @@ function generateBatchM3u8(headers, segments, batchFilesSet) {
         }
     }
     
-    // 确保有结束标签 (如果原文件有)
-    if (!outputLines.some(l => l.includes('#EXT-X-ENDLIST'))) {
-        outputLines.push('#EXT-X-ENDLIST');
-    }
-    
+    outputLines.push('#EXT-X-ENDLIST');
     return outputLines.join('\n');
 }
 
@@ -215,14 +222,14 @@ async function initCore() {
             "解析二进制指令集..."
         ];
         
-        // 启动慢速模拟器
+        // 启动慢速模拟器 (每 3 秒跳一次，防止闪烁)
         const compileTimer = setInterval(() => {
             if (compileProgress < 88) { // 留一点空间给真实启动
-                compileProgress += Math.random() * 2; // 随机增加
+                compileProgress += Math.random() * 5; // 每次跳 0-5%
                 const tip = compileTips[Math.floor(Math.random() * compileTips.length)];
                 UI.updateProgress(tip, Math.floor(compileProgress));
             }
-        }, 800);
+        }, 3000);
 
         // 停止模拟的辅助函数
         const stopCompileMock = () => {
@@ -259,7 +266,7 @@ async function initCore() {
                     const realPct = base + Math.round((safeCount / totalWorkers) * range);
                     
                     UI.updateProgress(
-                        `正在启动计算单元: ${safeCount}/${totalWorkers} 线程就绪`,
+                        `正在启动计算单元: ${safeCount}/${totalWorkers} 线程就绪`, 
                         realPct
                     );
                 }, { once: true });
@@ -290,8 +297,7 @@ async function initCore() {
         if (RUN_BTN) { RUN_BTN.disabled = false; RUN_BTN.innerText = "选择文件夹并开始"; }
         UI.setStep(2); // 进度条下方步骤切换
     } catch (e) { UI.writeLog("初始化失败: " + e.message); }
-}
-/**
+}/**
  * 引擎下载逻辑：支持 Cache API 实现离线秒开
  */
 async function fetchWithProgress(url, name, fixedSize) {
