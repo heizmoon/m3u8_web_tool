@@ -318,6 +318,25 @@ document.addEventListener('DOMContentLoaded', () => {
         mergeBtn.onclick = async () => {
             try {
                 const files = await window.showOpenFilePicker({ multiple: true });
+                if (!files || files.length === 0) return;
+
+                // 1. 预先计算总大小，进行风险提示
+                let totalSize = 0;
+                for (const f of files) {
+                    // showOpenFilePicker 返回的是 FileHandle，需要 getFile() 获取属性
+                    // 这里为了性能，先不全读，只在循环里读，但为了预判大小，我们需要先遍历一遍
+                    // 或者我们可以在下面的循环中累加，但那样就没法提前终止了。
+                    // 鉴于 handle.getFile() 很快，我们先预检。
+                    const fileData = await f.getFile();
+                    totalSize += fileData.size;
+                }
+
+                const GB = 1024 * 1024 * 1024;
+                if (totalSize > 2 * GB) {
+                    const confirmMsg = `⚠️ 风险警告\n\n您选择的文件总大小为 ${(totalSize / GB).toFixed(2)} GB。\n\n浏览器环境处理超过 2GB 的文件极易导致内存溢出（OOM）崩溃。\n\n建议使用专业桌面软件处理此类大文件。\n\n是否仍要尝试？`;
+                    if (!confirm(confirmMsg)) return;
+                }
+
                 mergeBtn.disabled = true;
                 UI.writeLog("🔗 开始无损拼合本地文件...");
                 
@@ -330,11 +349,21 @@ document.addEventListener('DOMContentLoaded', () => {
                     listTxt += `file '${vfsName}'\n`;
                 }
                 await safeWriteFile('list.txt', new TextEncoder().encode(listTxt));
-                await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'Total_Merged.mp4']);
+                
+                UI.writeLog("[内核] 正在执行 concat 指令...");
+                const ret = await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'Total_Merged.mp4']);
+                
+                if (ret !== 0) {
+                    throw new Error(`内核进程异常退出 (Exit Code: ${ret})。可能是内存不足或文件格式不兼容。`);
+                }
+
                 const data = await ffmpeg.readFile('Total_Merged.mp4');
                 UI.downloadFile(data, "合并结果_Full.mp4");
                 UI.writeLog("✅ 拼合任务已完成！");
-            } catch (e) { UI.writeLog("❌ 拼合失败: " + e.message); }
+            } catch (e) { 
+                UI.writeLog("❌ 拼合失败: " + e.message); 
+                alert(`❌ 任务失败\n\n原因: ${e.message}\n\n如果是大文件合并失败，请尝试减少文件数量。`);
+            }
             finally { mergeBtn.disabled = false; UI.updateProgress("就绪", 0); }
         };
     }
