@@ -3,6 +3,7 @@ let ffmpeg = null;
 const RUN_BTN = document.getElementById('runBtn');
 const FIXED_ENGINE_SIZE = 31.2 * 1024 * 1024;
 let taskDuration = 0; // 任务总时长 (秒)
+let previousBatchesDuration = 0; // 之前所有分段已完成的时长 (秒)
 
 // 新增解耦辅助函数：无论路径是什么，自动创建目录防止卡死
 async function safeWriteFile(path, data) {
@@ -17,17 +18,33 @@ async function safeWriteFile(path, data) {
     return await ffmpeg.writeFile(path, data);
 }
 
-// 解析 M3U8 总时长
-function parseTotalDuration(m3u8Content) {
+// 提取文件名
+function getFileName(path) {
+    return path.split('/').pop().split('?')[0];
+}
+
+// 解析 M3U8 总时长，并建立 文件名->时长 的映射
+function parseM3u8Info(m3u8Content) {
     let total = 0;
+    const durationMap = new Map();
     const lines = m3u8Content.split('\n');
+    
+    let currentDuration = 0;
     for (const line of lines) {
-        if (line.startsWith('#EXTINF:')) {
-            const duration = parseFloat(line.split(':')[1]);
-            if (!isNaN(duration)) total += duration;
+        const l = line.trim();
+        if (l.startsWith('#EXTINF:')) {
+            currentDuration = parseFloat(l.split(':')[1]);
+        } else if (!l.startsWith('#') && l !== '') {
+            // 这是一个文件行
+            if (currentDuration > 0) {
+                total += currentDuration;
+                const fname = getFileName(l);
+                durationMap.set(fname, currentDuration);
+                currentDuration = 0; // 重置
+            }
         }
     }
-    return total;
+    return { total, durationMap };
 }
 
 // 解析时间字符串为秒 (00:01:23.45 -> 83.45)
@@ -37,6 +54,14 @@ function parseTimeStr(timeStr) {
         return parseFloat(parts[0]) * 3600 + parseFloat(parts[1]) * 60 + parseFloat(parts[2]);
     }
     return 0;
+}
+
+// 秒数格式化为 HH:MM:SS
+function formatTime(seconds) {
+    const h = Math.floor(seconds / 3600).toString().padStart(2, '0');
+    const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, '0');
+    const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+    return `${h}:${m}:${s}`;
 }
 
 async function initCore() {
@@ -53,10 +78,16 @@ async function initCore() {
                 if (taskDuration > 0) {
                     const timeMatch = message.match(/time=\s*([\d:.]+)/);
                     if (timeMatch) {
-                        const currentSec = parseTimeStr(timeMatch[1]);
-                        // VFS写入占5%，合并占95%。所以合并进度 = 5 + (当前/总 * 95)
-                        const pct = Math.min(5 + Math.round((currentSec / taskDuration) * 95), 100);
-                        UI.updateProgress(`正在合并视频: ${timeMatch[1]} / 预计总长`, pct);
+                        const currentSegmentTime = parseTimeStr(timeMatch[1]);
+                        // 全局时间 = 之前分段的总长 + 当前分段正在处理的时间
+                        const globalTime = previousBatchesDuration + currentSegmentTime;
+                        
+                        // VFS写入占5%，合并占95%
+                        const pct = Math.min(5 + Math.round((globalTime / taskDuration) * 95), 100);
+                        const currentStr = formatTime(globalTime);
+                        const totalStr = formatTime(taskDuration);
+                        
+                        UI.updateProgress(`正在合并视频: ${currentStr} / ${totalStr}`, pct);
                     }
                 }
             }
@@ -74,28 +105,45 @@ async function initCore() {
         UI.updateProgress("正在解析核心组件: ffmpeg-worker.js", 20);
 
         // 优化 3/3 阶段：捕获 Worker 启动计数
-        let workerCount = 0;
-        const totalWorkers = navigator.hardwareConcurrency || 4; // 通常取决于 CPU 核心数
+        let activeWorkerCount = 0; // 真正活跃（已发送消息）的线程数
+        const totalWorkers = navigator.hardwareConcurrency || 4; 
         
         // 初始状态 (20%)
-        UI.updateProgress(`正在启动多线程引擎: 0/${totalWorkers} 线程就绪`, 20);
+        UI.updateProgress(`正在启动多线程引擎: 等待内核响应...`, 20);
 
         // 监听 Worker 启动（解耦式监听）
         const originalWorker = window.Worker;
         window.Worker = function(scriptURL, options) {
+            const w = new originalWorker(scriptURL, options);
+            
+            // 只有 FFmpeg 的 Worker 才需要监控
             if (scriptURL.toString().includes('ffmpeg')) {
-                workerCount++;
-                // 剩余 80% 的进度由线程启动均分
-                const initPct = 20 + Math.round((workerCount / totalWorkers) * 80);
-                UI.updateProgress(`正在启动多线程引擎: ${workerCount}/${totalWorkers} 线程就绪`, initPct);
+                // 监听 Worker 的首条消息，代表它真正活了
+                // 使用 { once: true } 确保每个 Worker 只贡献一次进度
+                w.addEventListener('message', () => {
+                    activeWorkerCount++;
+                    // 剩余 80% 的进度由线程真实就绪数决定
+                    // 防止 activeWorkerCount 超过 totalWorkers (有些实现可能会重建 Worker)
+                    const safeCount = Math.min(activeWorkerCount, totalWorkers);
+                    const initPct = 20 + Math.round((safeCount / totalWorkers) * 80);
+                    
+                    UI.updateProgress(
+                        `正在启动多线程引擎: ${safeCount}/${totalWorkers} 线程已就绪`, 
+                        initPct
+                    );
+                }, { once: true });
             }
-            return new originalWorker(scriptURL, options);
+            return w;
         };
 
         await ffmpeg.load({ coreURL: './ffmpeg-core.js', wasmURL, workerURL: './ffmpeg-core.worker.js' });
         
         // 恢复原始 Worker
         window.Worker = originalWorker;
+
+        // 视觉优化：强制显示最终线程状态并暂停一下，让用户看清
+        UI.updateProgress(`正在启动多线程引擎: ${totalWorkers}/${totalWorkers} 线程就绪`, 100);
+        await new Promise(r => setTimeout(r, 800));
 
         UI.updateProgress("引擎准备就绪", 100);
         if (RUN_BTN) { RUN_BTN.disabled = false; RUN_BTN.innerText = "选择文件夹并开始"; }
@@ -125,7 +173,7 @@ async function fetchWithProgress(url, name, fixedSize) {
         if (pct > 100) pct = 100; // 防止溢出
 
         UI.updateProgress(
-            `下载引擎: ${name} (${loadedMB}MB / ${totalMB}MB)`, 
+            `下载引擎: ${name} (${loadedMB}MB / ${totalMB}MB)`,
             pct
         );
     }
@@ -145,6 +193,10 @@ document.addEventListener('DOMContentLoaded', () => {
             runBtn.disabled = true;
             runBtn.innerText = "处理中...";
             UI.setStep(3);
+            
+            // 重置全局状态
+            previousBatchesDuration = 0; 
+            taskDuration = 0;
 
             let tsList = []; let totalSize = 0; let m3u8File = null; let keyFiles = [];
             async function scan(h) {
@@ -161,59 +213,65 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!m3u8File) throw new Error("未找到清单文件");
             tsList.sort((a, b) => a.handle.name.localeCompare(b.handle.name, undefined, {numeric: true}));
 
-            // 解析 M3U8 并计算总时长
+            // 解析 M3U8 并计算总时长、建立映射
             const m3u8Raw = await (await m3u8File.getFile()).text();
-            taskDuration = parseTotalDuration(m3u8Raw);
+            const m3u8Info = parseM3u8Info(m3u8Raw);
+            taskDuration = m3u8Info.total;
+            const durationMap = m3u8Info.durationMap;
+            
             UI.writeLog(`[分析] 视频总时长: ${taskDuration.toFixed(1)} 秒，切片数量: ${tsList.length}`);
 
             const CHUNK_LIMIT = 1024 * 1024 * 1024; // 1GB
-            let batches = totalSize < 1.5 * CHUNK_LIMIT ? [tsList] : splitBatches(tsList, CHUNK_LIMIT);
+            let batches = totalSize < 1.5 * CHUNK_LIMIT ? 
+                          splitBatches(tsList, CHUNK_LIMIT, durationMap) : // 即使不分段也要走这个逻辑来计算时长
+                          splitBatches(tsList, CHUNK_LIMIT, durationMap);
+            
+            // 如果不需要分段，splitBatches 也会返回一个 batch，逻辑通用
 
             try { await ffmpeg.createDir('index'); } catch(e){}
             for(const k of keyFiles) await safeWriteFile(`index/${k.name}`, new Uint8Array(await (await k.getFile()).arrayBuffer()));
 
             let totalIdx = 0;
-            // let lastPct = -1; // 不再由写入阶段主导 UI
 
             for (let i = 0; i < batches.length; i++) {
                 const batch = batches[i];
                 const partName = `Part_${i + 1}.mp4`;
                 
-                // 如果分段了，我们需要重新估算当前 Batch 的时长，这里简化处理，假设只有一个 Batch 或均匀分布
-                // 如果是多段，taskDuration 应该动态调整，但为保持简单，这里暂用总时长（影响不大，因为日志会自动修正）
-
-                for (const ts of batch) {
+                // 1. 写入文件阶段
+                for (const ts of batch.files) {
                     totalIdx++;
                     
                     // 写入阶段只占前 5% 的进度
                     const writePct = Math.round((totalIdx / tsList.length) * 5);
                     UI.updateProgress(`准备数据: ${totalIdx} / ${tsList.length}`, writePct);
 
-                    // 降低 UI 刷新频率，防止卡顿
                     if (totalIdx % 50 === 0) await new Promise(r => setTimeout(r, 0));
-
                     await safeWriteFile(`index/${ts.handle.name}`, new Uint8Array(await (await ts.handle.getFile()).arrayBuffer()));
                 }
 
-                // 阶段切换提示
-                UI.updateProgress(`开始合并 (Part ${i+1})...`, 5);
-                UI.writeLog(`[状态] 数据准备完毕，启动内核合并 (Part ${i+1})...`);
+                // 2. 合并阶段
+                UI.updateProgress(`开始合并 (Part ${i+1})...`, 5 + Math.round((previousBatchesDuration / taskDuration) * 95));
+                UI.writeLog(`[状态] 启动内核合并 (Part ${i+1}), 预计分段时长: ${batch.duration.toFixed(1)}s`);
 
-                const currentNames = new Set(batch.map(t => t.handle.name));
-                const filtered = m3u8Raw.split('\n').filter(l => l.includes('.ts') ? currentNames.has(l.trim().split('/').pop()) : true).join('\n').replace(/URI="([^"]+)"/g, (m, p) => `URI="index/${p.split('/').pop()}"`);
+                const currentNames = new Set(batch.files.map(t => t.handle.name));
+                const filtered = m3u8Raw.split('\n').filter(l => l.includes('.ts') ? currentNames.has(l.trim().split('/').pop().split('?')[0]) : true).join('\n').replace(/URI="([^"]+)"/g, (m, p) => `URI="index/${p.split('/').pop()}"`);
                 await safeWriteFile('temp.m3u8', new TextEncoder().encode(filtered));
 
                 await ffmpeg.exec(['-allowed_extensions', 'ALL', '-i', 'temp.m3u8', '-c', 'copy', '-fflags', '+genpts+igndts', partName]);
+                
+                // 本分段完成，累加时长到全局
+                previousBatchesDuration += batch.duration;
+
                 const data = await ffmpeg.readFile(partName);
                 UI.downloadFile(data, `${dir.name}_${partName}`);
                 
                 await ffmpeg.deleteFile(partName);
-                for(const ts of batch) await ffmpeg.deleteFile(`index/${ts.handle.name}`);
+                for(const ts of batch.files) await ffmpeg.deleteFile(`index/${ts.handle.name}`);
             }
             UI.writeLog("🎉 任务完成");
             UI.updateProgress("任务完成", 100);
         } catch (e) { UI.writeLog("❌ 失败: " + e.message); }
-        finally { runBtn.disabled = false; runBtn.innerText = "选择文件夹并开始"; UI.setStep(2); taskDuration = 0; }
+        finally { runBtn.disabled = false; runBtn.innerText = "选择文件夹并开始"; UI.setStep(2); taskDuration = 0; previousBatchesDuration = 0; }
     };
 
     // 本地 MP4 拼合逻辑
@@ -244,13 +302,31 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
-function splitBatches(list, limit) {
-    let res = []; let cur = []; let sum = 0;
+// 分批函数改进：同时计算每批次的时长
+function splitBatches(list, limit, durationMap) {
+    let res = []; 
+    let curFiles = []; 
+    let curSize = 0;
+    let curDuration = 0;
+    
+    // 如果没有找到映射（比如文件名不匹配），给一个默认值 0，防止 NaN
+    const getDur = (name) => durationMap.get(name) || 0;
+
     for(const t of list) {
-        cur.push(t); sum += t.size;
-        if(sum >= limit) { res.push(cur); cur = []; sum = 0; }
+        curFiles.push(t); 
+        curSize += t.size;
+        curDuration += getDur(t.handle.name);
+
+        if(curSize >= limit) { 
+            res.push({ files: curFiles, duration: curDuration }); 
+            curFiles = []; 
+            curSize = 0;
+            curDuration = 0;
+        }
     }
-    if(cur.length) res.push(cur);
+    if(curFiles.length) {
+        res.push({ files: curFiles, duration: curDuration });
+    }
     return res;
 }
 initCore();
