@@ -2,45 +2,42 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>M3U8 Pro 视频合并助手 - 商业版</title>
+    <title>M3U8 Pro - 商业级视频合并助手</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
     <div class="app-container">
         <aside class="sidebar">
             <div class="brand">🎬 M3U8 Pro</div>
-            
-            <div class="stepper">
-                <div class="step active" id="step-1">1. 等待内核加载</div>
-                <div class="step" id="step-2">2. 选择源文件夹</div>
-                <div class="step" id="step-3">3. 等待自动下载</div>
+            <div class="stepper" id="stepper-ui">
+                <div class="stepper-title">步骤说明：</div>
+                <div class="step active" id="step-1"><span class="step-num">1</span> 等待内核加载</div>
+                <div class="step-arrow">⬇️</div>
+                <div class="step" id="step-2"><span class="step-num">2</span> 选择源文件夹</div>
+                <div class="step-arrow">⬇️</div>
+                <div class="step" id="step-3"><span class="step-num">3</span> 等待自动下载</div>
             </div>
-
             <div class="info-card">
                 <h4>📌 文件夹选择说明</h4>
-                <p>请选择包含 <b>.m3u8</b> 文件及其对应 <b>ts片段</b> 的根目录。系统会自动识别深层目录。</p>
+                <p>请选择包含 <b>.m3u8</b> 的文件夹，系统支持深度自适应搜索。</p>
             </div>
-
             <div class="warning-card">
-                <h4>⚠️ 重要提示</h4>
-                <p>浏览器可能会询问“是否允许下载多个文件”，<b>请务必点击“允许”</b>，否则分段视频将无法保存。</p>
+                <h4>⚠️ 防拦截提示</h4>
+                <p>若浏览器弹出“允许下载多个文件”，请务必点击允许。</p>
             </div>
-
-            <div class="ad-placeholder">商业广告/打赏位</div>
         </aside>
 
         <main class="main-content">
             <nav class="tabs">
-                <button class="tab-btn active" onclick="switchTab('m3u8-tab')">M3U8 自动化合并</button>
-                <button class="tab-btn" onclick="switchTab('mp4-tab')">本地分段拼合 (备用)</button>
+                <button class="tab-btn active" data-tab="m3u8-tab">M3U8 自动化合并</button>
+                <button class="tab-btn" data-tab="mp4-tab">本地分段拼合</button>
             </nav>
 
             <section id="m3u8-tab" class="tab-panel active">
                 <div class="status-monitor">
                     <div class="loader-ui">
                         <div class="progress-info">
-                            <span id="task-name">内核加载中...</span>
+                            <span id="task-name">引擎准备中...</span>
                             <span id="task-pct">0%</span>
                         </div>
                         <div class="bar-bg"><div id="task-bar" class="bar-fill"></div></div>
@@ -51,25 +48,21 @@
                         <div class="stat-item">速度: <b id="stat-speed">-</b></div>
                     </div>
                 </div>
-
-                <button id="runBtn" class="primary-btn" onclick="startM3u8Process()" disabled>正在初始化内核...</button>
-                <div class="hint-text">支持 2000+ 片段自动分段技术</div>
+                <button id="runBtn" class="primary-btn" disabled>初始化中...</button>
             </section>
 
             <section id="mp4-tab" class="tab-panel">
-                <div class="info-alert">
-                    注意：此功能仅用于将上述步骤生成的 Part_1, Part_2 等 MP4 文件合并为一个整体，不处理原始 TS 片段。
-                </div>
-                <button class="secondary-btn" onclick="mergeLocalMp4()">🧩 选择已生成的 MP4 文件拼合</button>
+                <button id="mergeMp4Btn" class="secondary-btn">🧩 选中本地 MP4 文件并拼合</button>
             </section>
 
             <div class="terminal-container">
-                <div class="terminal-header">系统输出日志</div>
                 <div id="log"></div>
             </div>
         </main>
     </div>
 
-    <script src="processor.js"></script>
+    <script src="./ffmpeg.js"></script>
+    <script src="./ui-controller.js"></script>
+    <script src="./video-core.js"></script>
 </body>
 </html>
