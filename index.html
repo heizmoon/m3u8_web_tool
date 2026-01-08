@@ -1,40 +1,158 @@
-document.getElementById('startBtn').onclick = async () => {
-    try {
-        const handle = await window.showDirectoryPicker();
-        log("已授权文件夹: " + handle.name);
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>M3U8 Pro - 极速本地视频合并</title>
+    <script src="/ffmpeg.min.js"></script>
+    <style>
+        :root { --primary: #0070f3; --bg: #f5f7fa; }
+        body { font-family: -apple-system, system-ui, sans-serif; background: var(--bg); display: flex; justify-content: center; padding: 40px 20px; margin: 0; }
+        .card { background: white; padding: 32px; border-radius: 16px; box-shadow: 0 10px 30px rgba(0,0,0,0.08); width: 100%; max-width: 480px; }
+        h2 { margin: 0 0 10px 0; color: #111; font-size: 24px; }
+        .status-pill { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: 500; margin-bottom: 24px; background: #eee; color: #666; }
+        .status-ready { background: #e6fffa; color: #059669; }
+        .status-error { background: #fff5f5; color: #e53e3e; }
+        .btn { background: var(--primary); color: white; border: none; padding: 16px; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; width: 100%; transition: 0.2s; }
+        .btn:hover { opacity: 0.9; transform: translateY(-1px); }
+        .btn:disabled { background: #d1d5db; cursor: not-allowed; transform: none; }
+        #log { background: #1a1a1a; color: #32d74b; padding: 16px; height: 160px; overflow-y: auto; margin-top: 24px; border-radius: 8px; font-family: "SF Mono", monospace; font-size: 11px; text-align: left; line-height: 1.6; border: 1px solid #333; }
+        .progress-container { width: 100%; height: 6px; background: #eee; border-radius: 3px; margin-top: 20px; display: none; overflow: hidden; }
+        #progressBar { width: 0%; height: 100%; background: var(--primary); transition: width 0.3s; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>🎬 M3U8 视频助手</h2>
+        <div id="status" class="status-pill">正在初始化内核...</div>
         
-        // 1. 载入主索引
-        const m3u8Handle = await handle.getFileHandle('index.m3u8');
-        const m3u8Data = await (await m3u8Handle.getFile()).arrayBuffer();
-        await ffmpeg.writeFile('index.m3u8', new Uint8Array(m3u8Data));
+        <button id="runBtn" class="btn" disabled>选择 M3U8 文件夹合并</button>
+        
+        <div class="progress-container" id="progressWrap">
+            <div id="progressBar"></div>
+        </div>
 
-        // 2. 处理子目录 index
-        await ffmpeg.createDir('index');
-        const indexDir = await handle.getDirectoryHandle('index');
+        <div id="log">等待操作日志...</div>
+
+        <div style="margin-top: 20px; color: #999; font-size: 12px;">
+            [商业提示] 纯浏览器处理，不消耗流量，隐私安全。
+        </div>
+    </div>
+
+    <script>
+        // 检测全局变量
+        const { FFmpeg } = window.FFmpegWASM || window.FFmpeg || {};
+        if (!FFmpeg) {
+            document.getElementById('log').innerText = "❌ 错误：无法识别 FFmpeg 库。请确认 ffmpeg.min.js 在根目录且加载成功。";
+        }
         
-        log("正在读取分片文件...");
-        for await (const entry of indexDir.values()) {
-            if (entry.kind === 'file') {
-                const file = await entry.getFile();
-                const data = await file.arrayBuffer();
-                await ffmpeg.writeFile(`index/${entry.name}`, new Uint8Array(data));
+        const ffmpeg = new FFmpeg();
+        const logEl = document.getElementById('log');
+        const btn = document.getElementById('runBtn');
+        const statusEl = document.getElementById('status');
+        const progressBar = document.getElementById('progressBar');
+        const progressWrap = document.getElementById('progressWrap');
+
+        const addLog = (msg) => {
+            const time = new Date().toLocaleTimeString().split(' ')[0];
+            logEl.innerText += `\n[${time}] ${msg}`;
+            logEl.scrollTop = logEl.scrollHeight;
+        };
+
+        // 初始化内核
+        async function init() {
+            try {
+                const baseURL = window.location.origin;
+                addLog("正在从本地仓库载入核心组件...");
+                
+                await ffmpeg.load({
+                    coreURL: `${baseURL}/ffmpeg-core.js`,
+                    wasmURL: `${baseURL}/ffmpeg-core.wasm`,
+                    workerURL: `${baseURL}/ffmpeg-core.worker.js`
+                });
+                
+                statusEl.innerText = "● 内核已就绪";
+                statusEl.className = "status-pill status-ready";
+                btn.disabled = false;
+                addLog("初始化成功！当前模式：高效率多线程处理。");
+            } catch (e) {
+                statusEl.innerText = "● 初始化失败";
+                statusEl.className = "status-pill status-error";
+                addLog(`错误详情: ${e.message}`);
+                addLog("请检查：1. 是否上传了 vercel.json 2. 是否使用 HTTPS 访问。");
+                console.error(e);
             }
         }
 
-        log("🚀 开始执行合并指令 (不要关闭窗口)...");
-        // -allowed_extensions ALL 是为了允许加载 .key 文件
-        await ffmpeg.exec(['-allowed_extensions', 'ALL', '-i', 'index.m3u8', '-c', 'copy', 'output.mp4']);
+        // 监听 FFmpeg 输出日志（用于商业化 UI 反馈）
+        ffmpeg.on('log', ({ message }) => {
+            if (message.includes('time=')) {
+                // 简单的进度显示逻辑
+                addLog(message); 
+            }
+        });
 
-        const result = await ffmpeg.readFile('output.mp4');
-        const url = URL.createObjectURL(new Blob([result.buffer], { type: 'video/mp4' }));
-        
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${handle.name}_merged.mp4`;
-        a.click();
-        log("🎉 完成！请查看下载的文件。");
+        document.getElementById('runBtn').onclick = async () => {
+            try {
+                const handle = await window.showDirectoryPicker();
+                btn.disabled = true;
+                progressWrap.style.display = 'block';
+                progressBar.style.width = '10%';
+                
+                addLog(`已获得授权: ${handle.name}`);
 
-    } catch (err) {
-        log("❌ 操作失败: " + err.message);
-    }
-};
+                // 1. 读取主文件
+                const m3u8H = await handle.getFileHandle('index.m3u8');
+                const m3u8Data = await (await m3u8H.getFile()).arrayBuffer();
+                await ffmpeg.writeFile('index.m3u8', new Uint8Array(m3u8Data));
+                addLog("读取 index.m3u8 完成");
+                progressBar.style.width = '30%';
+
+                // 2. 载入分片 (对应 index/0.key 结构)
+                await ffmpeg.createDir('index');
+                const subDir = await handle.getDirectoryHandle('index');
+                addLog("正在扫描并载入本地切片...");
+                
+                let count = 0;
+                for await (const entry of subDir.values()) {
+                    if (entry.kind === 'file') {
+                        const data = await (await entry.getFile()).arrayBuffer();
+                        await ffmpeg.writeFile(`index/${entry.name}`, new Uint8Array(data));
+                        count++;
+                    }
+                }
+                addLog(`成功载入 ${count} 个相关文件 (包含 .ts 和 .key)`);
+                progressBar.style.width = '60%';
+
+                // 3. 执行合并命令
+                addLog("🚀 正在解密合并中，请勿关闭页面...");
+                await ffmpeg.exec([
+                    '-allowed_extensions', 'ALL', // 必须开启，否则无法读取 .key
+                    '-i', 'index.m3u8',
+                    '-c', 'copy',
+                    'output.mp4'
+                ]);
+
+                // 4. 下载结果
+                const result = await ffmpeg.readFile('output.mp4');
+                const url = URL.createObjectURL(new Blob([result.buffer], { type: 'video/mp4' }));
+                
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `M3U8合并_${new Date().getTime()}.mp4`;
+                a.click();
+                
+                progressBar.style.width = '100%';
+                addLog("🎉 合并成功！文件已开始下载。");
+                btn.disabled = false;
+            } catch (err) {
+                addLog(`❌ 失败: ${err.message}`);
+                btn.disabled = false;
+                progressWrap.style.display = 'none';
+            }
+        };
+
+        init();
+    </script>
+</body>
+</html>
