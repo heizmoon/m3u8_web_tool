@@ -174,9 +174,27 @@ async function initCore() {
     } catch (e) { UI.writeLog("初始化失败: " + e.message); }
 }
 /**
- * 引擎下载逻辑：修复数值错误
+ * 引擎下载逻辑：支持 Cache API 实现离线秒开
  */
 async function fetchWithProgress(url, name, fixedSize) {
+    const CACHE_NAME = 'm3u8-pro-engine-v1';
+    
+    try {
+        const cache = await caches.open(CACHE_NAME);
+        const cachedResp = await cache.match(url);
+        
+        if (cachedResp) {
+            UI.updateProgress(`🚀 发现本地离线引擎: ${name}`, 50);
+            await new Promise(r => setTimeout(r, 300)); // 稍微展示一下提示
+            const blob = await cachedResp.blob();
+            UI.updateProgress(`✅ 本地引擎加载完毕`, 100);
+            return URL.createObjectURL(blob);
+        }
+    } catch (e) {
+        console.warn("Cache API 访问失败，回退到普通下载", e);
+    }
+
+    // 缓存未命中，执行网络下载
     const resp = await fetch(url);
     const reader = resp.body.getReader();
     let loaded = 0;
@@ -196,13 +214,22 @@ async function fetchWithProgress(url, name, fixedSize) {
         if (pct > 100) pct = 100; // 防止溢出
 
         UI.updateProgress(
-            `下载引擎: ${name} (${loadedMB}MB / ${totalMB}MB)`,
+            `下载引擎: ${name} (${loadedMB}MB / ${totalMB}MB)`, 
             pct
         );
     }
-    return URL.createObjectURL(new Blob(chunks));
-}
+    
+    const blob = new Blob(chunks, { type: 'application/wasm' });
+    
+    // 下载完成后写入缓存，供下次离线使用
+    try {
+        const cache = await caches.open(CACHE_NAME);
+        await cache.put(url, new Response(blob));
+        console.log("引擎已缓存至本地");
+    } catch (e) { console.warn("缓存写入失败", e); }
 
+    return URL.createObjectURL(blob);
+}
 /**
  * M3U8 自动化合并逻辑
  */
