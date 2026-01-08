@@ -1,31 +1,26 @@
 let ffmpeg = null;
-const runBtn = document.getElementById('runBtn');
 
 async function initCore() {
+    const runBtn = document.getElementById('runBtn');
     try {
         const { FFmpeg } = window.FFmpegWASM || window.FFmpeg;
         ffmpeg = new FFmpeg();
         
-        // 挂载日志监听：这是显示时长、速度的关键
         ffmpeg.on('log', ({ message }) => {
             UI.writeLog(`[内核] ${message}`);
-            if (message.includes('frame=')) {
-                UI.updateStatsFromLog(message); // 实时更新统计信息
-            }
+            if (message.includes('frame=')) UI.updateStatsFromLog(message);
         });
 
+        // 细化初始化进度
         const wasmURL = await fetchWithProgress('./ffmpeg-core.wasm', '引擎内核', 31000000);
+        UI.updateProgress("正在启动本地解码环境 (1/2)...", 50);
+        await ffmpeg.load({ coreURL: './ffmpeg-core.js', wasmURL, workerURL: './ffmpeg-core.worker.js' });
+        UI.updateProgress("引擎就绪 (2/2)", 100);
         
-        UI.updateProgress("正在配置本地解码环境...", 50);
-        await ffmpeg.load({ 
-            coreURL: './ffmpeg-core.js', 
-            wasmURL, 
-            workerURL: './ffmpeg-core.worker.js' 
-        });
-        
-        UI.updateProgress("准备就绪", 100);
-        runBtn.disabled = false;
-        runBtn.innerText = "选择文件夹并开始";
+        if (runBtn) {
+            runBtn.disabled = false;
+            runBtn.innerText = "选择文件夹并开始";
+        }
         UI.setStep(2);
     } catch (e) { UI.writeLog("初始化失败: " + e.message); }
 }
@@ -45,103 +40,163 @@ async function fetchWithProgress(url, name, estSize) {
     return URL.createObjectURL(new Blob(chunks));
 }
 
-runBtn.onclick = async () => {
-    try {
-        const dir = await window.showDirectoryPicker();
-        runBtn.disabled = true;
-        runBtn.innerText = "任务处理中...";
-        UI.setStep(3);
+// 核心合并逻辑
+document.addEventListener('DOMContentLoaded', () => {
+    const runBtn = document.getElementById('runBtn');
+    if (!runBtn) return;
 
-        let tsList = []; let keyFiles = []; let m3u8File = null;
-        let totalSize = 0;
+    runBtn.onclick = async () => {
+        try {
+            const dir = await window.showDirectoryPicker();
+            runBtn.disabled = true;
+            runBtn.innerText = "合并中...";
+            UI.setStep(3);
 
-        // 递归扫描
-        async function scan(h) {
-            for await (const e of h.values()) {
-                if (e.kind === 'file') {
-                    const f = await e.getFile();
-                    if (e.name.endsWith('.ts')) { tsList.push({handle: e, size: f.size}); totalSize += f.size; }
-                    else if (e.name.endsWith('.key')) keyFiles.push(e);
-                    else if (e.name.endsWith('.m3u8')) m3u8File = e;
-                } else await scan(e);
+            let tsList = []; let totalSize = 0; let m3u8File = null; let keyFiles = [];
+            async function scan(h) {
+                for await (const e of h.values()) {
+                    if (e.kind === 'file') {
+                        const f = await e.getFile();
+                        if (e.name.endsWith('.ts')) { tsList.push({handle: e, size: f.size}); totalSize += f.size; }
+                        else if (e.name.endsWith('.key')) keyFiles.push(e);
+                        else if (e.name.endsWith('.m3u8')) m3u8File = e;
+                    } else await scan(e);
+                }
             }
-        }
-        await scan(dir);
-        if (!m3u8File) throw new Error("未找到 M3U8 清单文件");
-        tsList.sort((a, b) => a.handle.name.localeCompare(b.handle.name, undefined, {numeric: true}));
+            await scan(dir);
+            if (!m3u8File) throw new Error("未找到清单文件");
+            tsList.sort((a, b) => a.handle.name.localeCompare(b.handle.name, undefined, {numeric: true}));
 
-        // 智能体积切片逻辑：单段约 1GB
-        const CHUNK_LIMIT = 1000 * 1024 * 1024; 
-        let batches = [];
-        if (totalSize < 1.4 * 1024 * 1024 * 1024) {
-            batches = [tsList];
-        } else {
-            let curBatch = []; let curSum = 0;
-            for(const ts of tsList) {
-                curBatch.push(ts); curSum += ts.size;
-                if(curSum >= CHUNK_LIMIT) { batches.push(curBatch); curBatch = []; curSum = 0; }
+            // 智能容量分段
+            const CHUNK_LIMIT = 1024 * 1024 * 1024; // 1GB
+            let batches = totalSize < 1.5 * CHUNK_LIMIT ? [tsList] : splitBatches(tsList, CHUNK_LIMIT);
+
+            const m3u8Raw = await (await m3u8File.getFile()).text();
+            try { await ffmpeg.createDir('index'); } catch(e){}
+            for(const k of keyFiles) await ffmpeg.writeFile(`index/${k.name}`, new Uint8Array(await (await k.getFile()).arrayBuffer()));
+
+            let totalIdx = 0;
+            for (let i = 0; i < batches.length; i++) {
+                const batch = batches[i];
+                const partName = `Part_${i + 1}.mp4`;
+                for (const ts of batch) {
+                    totalIdx++;
+                    UI.updateProgress(`正在准备数据 (${totalIdx}/${tsList.length})`, Math.round((totalIdx/tsList.length)*100));
+                    await ffmpeg.writeFile(`index/${ts.handle.name}`, new Uint8Array(await (await ts.handle.getFile()).arrayBuffer()));
+                }
+
+                // 局部清单构造
+                const currentNames = new Set(batch.map(t => t.handle.name));
+                const filtered = m3u8Raw.split('\n').filter(l => l.includes('.ts') ? currentNames.has(l.trim().split('/').pop()) : true).join('\n').replace(/URI="([^"]+)"/g, (m, p) => `URI="index/${p.split('/').pop()}"`);
+                await ffmpeg.writeFile('temp.m3u8', new TextEncoder().encode(filtered));
+
+                // 合并
+                await ffmpeg.exec(['-allowed_extensions', 'ALL', '-i', 'temp.m3u8', '-c', 'copy', '-fflags', '+genpts+igndts', partName]);
+                const data = await ffmpeg.readFile(partName);
+                UI.downloadFile(data, `${dir.name}_${partName}`);
+                
+                await ffmpeg.deleteFile(partName);
+                for(const ts of batch) await ffmpeg.deleteFile(`index/${ts.handle.name}`);
             }
-            if(curBatch.length > 0) batches.push(curBatch);
-        }
+            UI.writeLog("🎉 任务完成");
+        } catch (e) { UI.writeLog("❌ 失败: " + e.message); }
+        finally { runBtn.disabled = false; runBtn.innerText = "选择文件夹并开始"; UI.setStep(2); }
+    };
+});
 
-        const m3u8Raw = await (await m3u8File.getFile()).text();
-        try { await ffmpeg.createDir('index'); } catch(e){}
-        for(const k of keyFiles) {
-            await ffmpeg.writeFile(`index/${k.name}`, new Uint8Array(await (await k.getFile()).arrayBuffer()));
-        }
-
-        let totalProcessed = 0;
-        for (let i = 0; i < batches.length; i++) {
-            const batch = batches[i];
-            const partName = `Part_${i + 1}.mp4`;
-            
-            UI.writeLog(`--- 正在合并第 ${i+1} / ${batches.length} 段 ---`);
-            
-            // 写入片段到内存
-            for (const ts of batch) {
-                totalProcessed++;
-                // 实时更新进度条：防止“一瞬间拉满”
-                UI.updateProgress(`正在准备数据 (${totalProcessed}/${tsList.length})`, Math.round((totalProcessed/tsList.length)*100));
-                await ffmpeg.writeFile(`index/${ts.handle.name}`, new Uint8Array(await (await ts.handle.getFile()).arrayBuffer()));
-            }
-
-            // 构造局部清单
-            const currentTsNames = new Set(batch.map(t => t.handle.name));
-            const filteredM3u8 = m3u8Raw.split('\n').filter(line => {
-                if (line.includes('.ts')) return currentTsNames.has(line.trim().split('/').pop());
-                return true;
-            }).join('\n').replace(/URI="([^"]+)"/g, (m, p) => `URI="index/${p.split('/').pop()}"`);
-
-            await ffmpeg.writeFile('temp.m3u8', new TextEncoder().encode(filteredM3u8));
-            
-            // 执行 FFmpeg：加入 -t 参数（如果需要）和 -fflags 保证不卡死
-            await ffmpeg.exec([
-                '-allowed_extensions', 'ALL', 
-                '-i', 'temp.m3u8', 
-                '-c', 'copy', 
-                '-fflags', '+genpts+igndts', // 核心修复：忽略坏时间戳，防止无限循环
-                '-movflags', '+faststart', 
-                partName
-            ]);
-            
-            const data = await ffmpeg.readFile(partName);
-            UI.downloadFile(data, `${dir.name}_${partName}`);
-            
-            // 立即清理已处理的数据，释放 WASM 内存
-            await ffmpeg.deleteFile(partName);
-            for(const ts of batch) await ffmpeg.deleteFile(`index/${ts.handle.name}`);
-        }
-        
-        UI.writeLog("🎉 任务圆满完成！");
-        UI.setStep(2); 
-    } catch (e) { 
-        UI.writeLog("❌ 操作失败: " + e.message); 
-        UI.setStep(2);
-    } finally {
-        runBtn.disabled = false;
-        runBtn.innerText = "选择文件夹并开始";
+function splitBatches(list, limit) {
+    let res = []; let cur = []; let sum = 0;
+    for(const t of list) {
+        cur.push(t); sum += t.size;
+        if(sum >= limit) { res.push(cur); cur = []; sum = 0; }
     }
-};
+    if(cur.length) res.push(cur);
+    return res;
+}
 
-// 启动
 initCore();
+/**
+ * 核心逻辑补全：本地 MP4 无损拼合
+ * 对应 index.html 中的 mergeMp4Btn 按钮
+ */
+document.addEventListener('DOMContentLoaded', () => {
+    const mergeMp4Btn = document.getElementById('mergeMp4Btn');
+    if (!mergeMp4Btn) return;
+
+    mergeMp4Btn.onclick = async () => {
+        const btn = mergeMp4Btn;
+        try {
+            // 1. 让用户选择多个导出的 Part 文件
+            const fileHandles = await window.showOpenFilePicker({
+                multiple: true,
+                types: [{
+                    description: '视频分段文件',
+                    accept: { 'video/mp4': ['.mp4'] }
+                }]
+            });
+
+            if (fileHandles.length < 2) {
+                alert("请至少选择两个分段文件进行拼合");
+                return;
+            }
+
+            // 锁定按钮，更新状态
+            btn.disabled = true;
+            btn.innerText = "拼合中...";
+            UI.writeLog(`🔗 开始拼合 ${fileHandles.length} 个文件...`);
+            UI.updateProgress("正在准备拼合数据...", 10);
+
+            // 2. 将选中的文件写入 WASM 虚拟文件系统，并生成文件清单
+            let concatList = "";
+            for (let i = 0; i < fileHandles.length; i++) {
+                const file = await fileHandles[i].getFile();
+                const vfsName = `merge_input_${i}.mp4`;
+                
+                UI.updateProgress(`读取文件: ${file.name}`, Math.round((i / fileHandles.length) * 80));
+                
+                const arrayBuffer = await file.arrayBuffer();
+                await ffmpeg.writeFile(vfsName, new Uint8Array(arrayBuffer));
+                
+                concatList += `file '${vfsName}'\n`;
+            }
+
+            // 3. 写入 FFmpeg 拼合清单文件
+            await ffmpeg.writeFile('concat_list.txt', new TextEncoder().encode(concatList));
+
+            // 4. 执行无损拼合指令
+            // -f concat: 使用合并协议
+            // -c copy: 无损流拷贝（不重编码，保护画质且速度极快）
+            UI.writeLog("🚀 正在执行无损串联，请稍候...");
+            await ffmpeg.exec([
+                '-f', 'concat', 
+                '-safe', '0', 
+                '-i', 'concat_list.txt', 
+                '-c', 'copy', 
+                'Final_Total_Video.mp4'
+            ]);
+
+            // 5. 读取合并后的结果并触发下载
+            UI.updateProgress("拼合完成，准备导出", 100);
+            const finalData = await ffmpeg.readFile('Final_Total_Video.mp4');
+            UI.downloadFile(finalData, "合并完成_Total_Video.mp4");
+
+            // 6. 清理内存，防止浏览器卡死
+            UI.writeLog("🧹 正在清理缓存内存...");
+            await ffmpeg.deleteFile('Final_Total_Video.mp4');
+            await ffmpeg.deleteFile('concat_list.txt');
+            for (let i = 0; i < fileHandles.length; i++) {
+                await ffmpeg.deleteFile(`merge_input_${i}.mp4`);
+            }
+
+            UI.writeLog("✅ 全体拼合成功！");
+
+        } catch (e) {
+            UI.writeLog("❌ 拼合失败: " + e.message);
+            console.error(e);
+        } finally {
+            btn.disabled = false;
+            btn.innerText = "🧩 选中本地 MP4 文件并拼合";
+            UI.updateProgress("等待下一次任务", 0);
+        }
+    };
+});

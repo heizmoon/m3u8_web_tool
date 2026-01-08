@@ -17,10 +17,10 @@
                 <div class="step-arrow">⬇️</div>
                 <div class="step" id="step-3"><span class="step-num">3</span> 等待自动下载</div>
             </div>
-            <div class="info-card">
-                <h4>📌 文件夹选择说明</h4>
-                <p>请选择包含 <b>.m3u8</b> 的文件夹，系统支持深度自适应搜索。</p>
-            </div>
+            
+            <div class="info-card" id="info-card-box">
+                </div>
+            
             <div class="warning-card">
                 <h4>⚠️ 防拦截提示</h4>
                 <p>若浏览器弹出“允许下载多个文件”，请务必点击允许。</p>
@@ -49,13 +49,17 @@
                     </div>
                 </div>
                 <button id="runBtn" class="primary-btn" disabled>初始化中...</button>
+                <div class="hint-text">智能体积感应：超大视频自动分段，小体积视频无损合一</div>
             </section>
 
             <section id="mp4-tab" class="tab-panel">
+                <div class="info-alert" id="mp4-info-box">
+                    </div>
                 <button id="mergeMp4Btn" class="secondary-btn">🧩 选中本地 MP4 文件并拼合</button>
             </section>
 
             <div class="terminal-container">
+                <div class="terminal-header">系统日志输出</div>
                 <div id="log"></div>
             </div>
         </main>
