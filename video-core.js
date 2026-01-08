@@ -47,6 +47,93 @@ function parseM3u8Info(m3u8Content) {
     return { total, durationMap };
 }
 
+// 解析 M3U8 结构：分离全局头和分段
+function parseM3u8Structure(content) {
+    const lines = content.split('\n');
+    const headers = [];
+    const segments = [];
+    
+    let currentSegmentLines = [];
+    
+    for (let i = 0; i < lines.length; i++) {
+        let line = lines[i].trim();
+        if (!line) continue;
+
+        if (line.startsWith('#')) {
+            // 标签行
+            // 如果是文件相关的标签（EXTINF），或者在已经开始收集分段元数据时，归入当前分段
+            // 简单的启发式：如果还没有遇到过任何文件，且是全局性标签，归入 headers
+            // 否则归入 currentSegmentLines
+            
+            // 常见的全局标签
+            const isGlobal = line.startsWith('#EXTM3U') || 
+                             line.startsWith('#EXT-X-VERSION') ||
+                             line.startsWith('#EXT-X-TARGETDURATION') ||
+                             line.startsWith('#EXT-X-PLAYLIST-TYPE') || 
+                             line.startsWith('#EXT-X-MEDIA-SEQUENCE');
+            
+            if (segments.length === 0 && isGlobal && currentSegmentLines.length === 0) {
+                headers.push(line);
+            } else {
+                currentSegmentLines.push(line);
+            }
+        } else {
+            // 文件行 (假设非空且不以#开头即为文件)
+            const filename = getFileName(line);
+            currentSegmentLines.push(line); // 保存原始行，稍后替换
+            
+            segments.push({
+                filename: filename,
+                lines: [...currentSegmentLines]
+            });
+            currentSegmentLines = []; // 重置
+        }
+    }
+    
+    // 处理剩余的尾部标签 (如 #EXT-X-ENDLIST)
+    if (currentSegmentLines.length > 0) {
+        // 如果最后还有剩余，通常是结束标签，可以归入 headers 或者 footers
+        // 为了简单，直接追加到最后一个 segment 或者 headers (如果没 segment)
+        if (segments.length > 0) {
+            segments[segments.length - 1].lines.push(...currentSegmentLines);
+        } else {
+            headers.push(...currentSegmentLines);
+        }
+    }
+
+    return { headers, segments };
+}
+
+// 生成批次 M3U8
+function generateBatchM3u8(headers, segments, batchFilesSet) {
+    const outputLines = [...headers];
+    
+    for (const seg of segments) {
+        if (batchFilesSet.has(seg.filename)) {
+            for (const line of seg.lines) {
+                if (line.startsWith('#')) {
+                    // 处理 Key URI
+                    if (line.includes('URI=')) {
+                        outputLines.push(line.replace(/URI="([^"]+)"/g, (m, p) => `URI="index/${getFileName(p)}"`));
+                    } else {
+                        outputLines.push(line);
+                    }
+                } else {
+                    // 文件行，强制重写路径到 index/
+                    outputLines.push(`index/${seg.filename}`);
+                }
+            }
+        }
+    }
+    
+    // 确保有结束标签 (如果原文件有)
+    if (!outputLines.some(l => l.includes('#EXT-X-ENDLIST'))) {
+        outputLines.push('#EXT-X-ENDLIST');
+    }
+    
+    return outputLines.join('\n');
+}
+
 // 解析时间字符串为秒 (00:01:23.45 -> 83.45)
 function parseTimeStr(timeStr) {
     const parts = timeStr.split(':');
@@ -116,7 +203,34 @@ async function initCore() {
         }
 
         // ==========================================
-        // 阶段二：真实加载 (Real Progress)
+        // 阶段二：WASM 编译等待期 (60% - 90%)
+        // 目的：填补 ffmpeg.load() 阻塞主线程的真空期
+        // ==========================================
+        let compileProgress = 60;
+        const compileTips = [
+            "正在优化 WASM 内存布局...",
+            "JIT 正在编译热点代码...",
+            "正在链接底层依赖库...",
+            "分配线程栈空间...",
+            "解析二进制指令集..."
+        ];
+        
+        // 启动慢速模拟器
+        const compileTimer = setInterval(() => {
+            if (compileProgress < 88) { // 留一点空间给真实启动
+                compileProgress += Math.random() * 2; // 随机增加
+                const tip = compileTips[Math.floor(Math.random() * compileTips.length)];
+                UI.updateProgress(tip, Math.floor(compileProgress));
+            }
+        }, 800);
+
+        // 停止模拟的辅助函数
+        const stopCompileMock = () => {
+            if (compileTimer) clearInterval(compileTimer);
+        };
+
+        // ==========================================
+        // 阶段三：真实启动 (90% - 100%)
         // ==========================================
         
         // 优化 3/3 阶段：捕获 Worker 启动计数
@@ -132,12 +246,15 @@ async function initCore() {
             if (scriptURL.toString().includes('ffmpeg')) {
                 // 监听 Worker 的首条消息，代表它真正活了
                 w.addEventListener('message', () => {
+                    // 只要收到任何消息，说明编译肯定结束了
+                    stopCompileMock();
+
                     activeWorkerCount++;
                     
-                    // 真实进度映射到 60% - 100% 的区间
-                    // 这样即使编译卡住了，前面的 60% 已经给足了用户信心
-                    const base = 60;
-                    const range = 40;
+                    // 映射范围：90% - 100%
+                    // 因为 Worker 启动极快，这里只展示最后的冲刺
+                    const base = 90;
+                    const range = 10;
                     const safeCount = Math.min(activeWorkerCount, totalWorkers);
                     const realPct = base + Math.round((safeCount / totalWorkers) * range);
                     
@@ -151,6 +268,7 @@ async function initCore() {
         };
 
         await ffmpeg.load({ coreURL: './ffmpeg-core.js', wasmURL, workerURL: './ffmpeg-core.worker.js' });
+        stopCompileMock(); // 保底清理
         
         // 恢复原始 Worker
         window.Worker = originalWorker;
@@ -214,7 +332,7 @@ async function fetchWithProgress(url, name, fixedSize) {
         if (pct > 100) pct = 100; // 防止溢出
 
         UI.updateProgress(
-            `下载引擎: ${name} (${loadedMB}MB / ${totalMB}MB)`, 
+            `下载引擎: ${name} (${loadedMB}MB / ${totalMB}MB)`,
             pct
         );
     }
@@ -230,6 +348,7 @@ async function fetchWithProgress(url, name, fixedSize) {
 
     return URL.createObjectURL(blob);
 }
+
 /**
  * M3U8 自动化合并逻辑
  */
@@ -263,9 +382,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!m3u8File) throw new Error("未找到清单文件");
             tsList.sort((a, b) => a.handle.name.localeCompare(b.handle.name, undefined, {numeric: true}));
 
-            // 解析 M3U8 并计算总时长、建立映射
+            // 解析 M3U8 结构
             const m3u8Raw = await (await m3u8File.getFile()).text();
-            const m3u8Info = parseM3u8Info(m3u8Raw);
+            const { headers, segments } = parseM3u8Structure(m3u8Raw);
+            
+            if (segments.length === 0) {
+                throw new Error("未检测到有效的分段信息。请确认选择的是包含 .ts 文件的媒体播放列表 (Media Playlist)，而不是主播放列表 (Master Playlist)。");
+            }
+
+            // 更新总时长映射
+            const m3u8Info = parseM3u8Info(m3u8Raw); 
             taskDuration = m3u8Info.total;
             const durationMap = m3u8Info.durationMap;
             
@@ -273,10 +399,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const CHUNK_LIMIT = 1024 * 1024 * 1024; // 1GB
             let batches = totalSize < 1.5 * CHUNK_LIMIT ? 
-                          splitBatches(tsList, CHUNK_LIMIT, durationMap) : // 即使不分段也要走这个逻辑来计算时长
+                          splitBatches(tsList, CHUNK_LIMIT, durationMap) : 
                           splitBatches(tsList, CHUNK_LIMIT, durationMap);
-            
-            // 如果不需要分段，splitBatches 也会返回一个 batch，逻辑通用
 
             try { await ffmpeg.createDir('index'); } catch(e){}
             for(const k of keyFiles) await safeWriteFile(`index/${k.name}`, new Uint8Array(await (await k.getFile()).arrayBuffer()));
@@ -286,12 +410,12 @@ document.addEventListener('DOMContentLoaded', () => {
             for (let i = 0; i < batches.length; i++) {
                 const batch = batches[i];
                 const partName = `Part_${i + 1}.mp4`;
-                
+                const batchFilesSet = new Set(batch.files.map(t => t.handle.name));
+
                 // 1. 写入文件阶段
                 for (const ts of batch.files) {
                     totalIdx++;
                     
-                    // 写入阶段只占前 5% 的进度
                     const writePct = Math.round((totalIdx / tsList.length) * 5);
                     UI.updateProgress(`准备数据: ${totalIdx} / ${tsList.length}`, writePct);
 
@@ -303,13 +427,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 UI.updateProgress(`开始合并 (Part ${i+1})...`, 5 + Math.round((previousBatchesDuration / taskDuration) * 95));
                 UI.writeLog(`[状态] 启动内核合并 (Part ${i+1}), 预计分段时长: ${batch.duration.toFixed(1)}s`);
 
-                const currentNames = new Set(batch.files.map(t => t.handle.name));
-                const filtered = m3u8Raw.split('\n').filter(l => l.includes('.ts') ? currentNames.has(l.trim().split('/').pop().split('?')[0]) : true).join('\n').replace(/URI="([^"]+)"/g, (m, p) => `URI="index/${p.split('/').pop()}"`);
-                await safeWriteFile('temp.m3u8', new TextEncoder().encode(filtered));
+                // 使用新函数生成正确的 M3U8
+                const filteredM3u8 = generateBatchM3u8(headers, segments, batchFilesSet);
+                await safeWriteFile('temp.m3u8', new TextEncoder().encode(filteredM3u8));
 
                 await ffmpeg.exec(['-allowed_extensions', 'ALL', '-i', 'temp.m3u8', '-c', 'copy', '-fflags', '+genpts+igndts', partName]);
                 
-                // 本分段完成，累加时长到全局
                 previousBatchesDuration += batch.duration;
 
                 const data = await ffmpeg.readFile(partName);
@@ -335,10 +458,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 // 1. 预先计算总大小，进行风险提示
                 let totalSize = 0;
                 for (const f of files) {
-                    // showOpenFilePicker 返回的是 FileHandle，需要 getFile() 获取属性
-                    // 这里为了性能，先不全读，只在循环里读，但为了预判大小，我们需要先遍历一遍
-                    // 或者我们可以在下面的循环中累加，但那样就没法提前终止了。
-                    // 鉴于 handle.getFile() 很快，我们先预检。
                     const fileData = await f.getFile();
                     totalSize += fileData.size;
                 }
