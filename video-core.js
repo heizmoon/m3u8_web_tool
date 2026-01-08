@@ -142,7 +142,7 @@ async function initCore() {
                     const realPct = base + Math.round((safeCount / totalWorkers) * range);
                     
                     UI.updateProgress(
-                        `正在启动计算单元: ${safeCount}/${totalWorkers} 线程就绪`, 
+                        `正在启动计算单元: ${safeCount}/${totalWorkers} 线程就绪`,
                         realPct
                     );
                 }, { once: true });
@@ -154,21 +154,6 @@ async function initCore() {
         
         // 恢复原始 Worker
         window.Worker = originalWorker;
-
-        // 关键修复：ffmpeg.load() 可能在所有 Worker 发送消息前就 resolve 了
-        // 或者主线程阻塞导致 UI 没来得及渲染。
-        // 这里我们手动等待所有线程就绪，强制让出主线程给 UI 渲染
-        let waitTime = 0;
-        while (activeWorkerCount < totalWorkers && waitTime < 5000) {
-            await new Promise(r => setTimeout(r, 100)); // 让出时间片处理 message 事件
-            waitTime += 100;
-        }
-
-        // 视觉优化：强制显示最终线程状态并暂停一下，让用户看清
-        UI.updateProgress(`引擎初始化完毕: ${totalWorkers}/${totalWorkers} 线程就绪`, 100);
-        await new Promise(r => setTimeout(r, 500));
-
-        UI.updateProgress("引擎准备就绪", 100);
 
         // 关键修复：ffmpeg.load() 可能在所有 Worker 发送消息前就 resolve 了
         // 或者主线程阻塞导致 UI 没来得及渲染。
