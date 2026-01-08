@@ -1,69 +1,40 @@
-<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-    <meta charset="UTF-8">
-    <title>M3U8 极速合并</title>
-    <script src="./ffmpeg.min.js"></script>
-    <style>
-        body { font-family: system-ui; text-align: center; padding: 50px; background: #f9f9f9; }
-        .box { background: white; padding: 30px; border-radius: 15px; box-shadow: 0 5px 15px rgba(0,0,0,0.1); display: inline-block; width: 400px; }
-        #log { background: #1a1a1a; color: #00ff00; padding: 15px; height: 150px; overflow-y: auto; text-align: left; font-size: 12px; margin-top: 20px; border-radius: 5px; font-family: monospace; }
-        .btn { background: #0070f3; color: white; border: none; padding: 12px 25px; border-radius: 5px; cursor: pointer; width: 100%; font-size: 16px; }
-        .btn:disabled { background: #ccc; cursor: not-allowed; }
-    </style>
-</head>
-<body>
-    <div class="box">
-        <h3>🎬 视频合并工具</h3>
-        <p id="status" style="color: #666;">检测环境中...</p>
-        <button id="startBtn" class="btn" disabled>选择文件夹合并</button>
-        <div id="log">日志载入中...</div>
-    </div>
+document.getElementById('startBtn').onclick = async () => {
+    try {
+        const handle = await window.showDirectoryPicker();
+        log("已授权文件夹: " + handle.name);
+        
+        // 1. 载入主索引
+        const m3u8Handle = await handle.getFileHandle('index.m3u8');
+        const m3u8Data = await (await m3u8Handle.getFile()).arrayBuffer();
+        await ffmpeg.writeFile('index.m3u8', new Uint8Array(m3u8Data));
 
-    <script>
-        // 自动适配库版本
-        const FF = window.FFmpegWASM || window.FFmpeg;
-        const ffmpeg = new FF.FFmpeg();
-
-        const log = (m) => { document.getElementById('log').innerText += `\n> ${m}`; };
-        const status = document.getElementById('status');
-
-        async function start() {
-            log("开始尝试加载内核...");
-            
-            // 检查跨域隔离
-            if (!crossOriginIsolated) {
-                log("⚠️ 警告：检测到未开启跨域隔离模式！");
-                log("请确保 vercel.json 已正确配置并部署。");
-            }
-
-            try {
-                await ffmpeg.load({
-                    coreURL: window.location.origin + '/ffmpeg-core.js',
-                    wasmURL: window.location.origin + '/ffmpeg-core.wasm',
-                    workerURL: window.location.origin + '/ffmpeg-core.worker.js'
-                });
-                status.innerText = "✅ 内核就绪";
-                status.style.color = "green";
-                document.getElementById('startBtn').disabled = false;
-                log("初始化成功！");
-            } catch (e) {
-                log("❌ 初始化出错：" + e.message);
-                console.error(e);
+        // 2. 处理子目录 index
+        await ffmpeg.createDir('index');
+        const indexDir = await handle.getDirectoryHandle('index');
+        
+        log("正在读取分片文件...");
+        for await (const entry of indexDir.values()) {
+            if (entry.kind === 'file') {
+                const file = await entry.getFile();
+                const data = await file.arrayBuffer();
+                await ffmpeg.writeFile(`index/${entry.name}`, new Uint8Array(data));
             }
         }
 
-        document.getElementById('startBtn').onclick = async () => {
-            try {
-                const handle = await window.showDirectoryPicker();
-                log("已选择: " + handle.name);
-                // 具体的合并代码（读取 index.m3u8 等）...
-            } catch (err) {
-                log("取消操作");
-            }
-        };
+        log("🚀 开始执行合并指令 (不要关闭窗口)...");
+        // -allowed_extensions ALL 是为了允许加载 .key 文件
+        await ffmpeg.exec(['-allowed_extensions', 'ALL', '-i', 'index.m3u8', '-c', 'copy', 'output.mp4']);
 
-        window.onload = start;
-    </script>
-</body>
-</html>
+        const result = await ffmpeg.readFile('output.mp4');
+        const url = URL.createObjectURL(new Blob([result.buffer], { type: 'video/mp4' }));
+        
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `${handle.name}_merged.mp4`;
+        a.click();
+        log("🎉 完成！请查看下载的文件。");
+
+    } catch (err) {
+        log("❌ 操作失败: " + err.message);
+    }
+};
