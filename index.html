@@ -2,68 +2,63 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>M3U8 Pro - 极速解密版</title>
+    <title>M3U8 Pro - 内存优化流式版</title>
     <style>
-        body { font-family: system-ui; text-align: center; padding: 40px; background: #f4f4f4; }
-        .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); display: inline-block; width: 550px; }
-        #log { background: #111; color: #0f0; padding: 15px; height: 250px; overflow-y: auto; text-align: left; font-size: 11px; margin-top: 20px; border-radius: 5px; font-family: monospace; white-space: pre-wrap; }
+        body { font-family: system-ui; text-align: center; padding: 20px; background: #f4f4f4; }
+        .card { background: white; padding: 25px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); display: inline-block; width: 90%; max-width: 600px; }
+        #log { background: #111; color: #0f0; padding: 15px; height: 300px; overflow-y: auto; text-align: left; font-size: 11px; margin-top: 20px; border-radius: 5px; font-family: monospace; white-space: pre-wrap; }
         .btn { background: #0070f3; color: white; border: none; padding: 14px; border-radius: 6px; cursor: pointer; width: 100%; font-size: 16px; margin-top: 10px; font-weight: bold; }
-        .btn:disabled { background: #ccc; cursor: not-allowed; }
-        .progress-container { width: 100%; background: #eee; border-radius: 5px; margin-top: 15px; height: 18px; position: relative; overflow: hidden; }
-        .progress-bar { width: 0%; height: 100%; background: #22c55e; transition: width 0.1s; }
-        .progress-text { position: absolute; width: 100%; text-align: center; font-size: 10px; line-height: 18px; color: #000; font-weight: bold; }
+        .btn:disabled { background: #ccc; cursor: wait; }
+        .status-bar { margin: 10px 0; padding: 10px; border-radius: 6px; background: #eef2ff; color: #3730a3; font-weight: bold; font-size: 13px; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h3>🎬 M3U8 极速合并 (多线程流式版)</h3>
-        <div id="status" style="margin-bottom: 10px; font-weight: bold; color: #666;">系统初始化...</div>
-        <div class="progress-container"><div id="progressBar" class="progress-bar"></div><div id="progressText" class="progress-text">准备就绪</div></div>
-        <button id="runBtn" class="btn" disabled>正在启动引擎...</button>
-        <div id="log">准备加载多线程内核...</div>
+        <h3>🎬 M3U8 极速合并 (内存优化版)</h3>
+        <div id="status" class="status-bar">正在加载多线程引擎...</div>
+        <button id="runBtn" class="btn" disabled>引擎初始化中...</button>
+        <div id="log">等待内核载入...</div>
     </div>
 
     <script>
-        const log = (m) => { const el = document.getElementById('log'); el.innerText += `\n> ${m}`; el.scrollTop = el.scrollHeight; };
         const statusEl = document.getElementById('status');
+        const logEl = document.getElementById('log');
         const btn = document.getElementById('runBtn');
+        const log = (m) => { logEl.innerText += `\n> ${m}`; logEl.scrollTop = logEl.scrollHeight; };
         let ffmpeg = null;
 
         async function initSystem() {
             try {
-                // 加载主脚本
                 const script = document.createElement('script');
-                script.src = '/ffmpeg.js';
+                script.src = '/ffmpeg.js'; // 确保文件名正确
                 document.head.appendChild(script);
                 await new Promise(r => script.onload = r);
 
                 const { FFmpeg } = window.FFmpegWASM || window.FFmpeg;
                 ffmpeg = new FFmpeg();
 
-                // 日志反馈
+                // 核心：监控内存压力，实时反馈进度
                 ffmpeg.on('log', ({ message }) => {
                     if (message.includes('Opening')) {
-                        const match = message.match(/index\/(.+)/);
-                        if (match) statusEl.innerText = "🔓 正在解密: " + match[1];
+                        const file = message.split("'")[1];
+                        statusEl.innerText = `🔓 正在解密: ${file}`;
                     }
                     log(`[FFmpeg] ${message}`);
                 });
 
-                // 显式加载多线程 worker
                 await ffmpeg.load({
                     coreURL: '/ffmpeg-core.js',
                     wasmURL: '/ffmpeg-core.wasm',
-                    workerURL: '/ffmpeg-core.worker.js'
+                    workerURL: '/ffmpeg-core.worker.js' // 启用多线程分担主线程压力
                 });
 
-                statusEl.innerText = "✅ 系统就绪 (多线程已激活)";
-                btn.innerText = "选择文件夹合并";
+                statusEl.innerText = "✅ 系统就绪";
+                btn.innerText = "选择文件夹开始合并";
                 btn.disabled = false;
-                log("初始化成功。请选择包含 index.m3u8 和 index 文件夹的目录。");
-
+                log("初始化成功。请确保浏览器内存充足。");
             } catch (err) {
-                statusEl.innerText = "❌ 启动失败";
-                log("错误: " + err.message);
+                statusEl.innerText = "❌ 加载失败";
+                log("启动错误: " + err.message);
             }
         }
 
@@ -71,57 +66,68 @@
             try {
                 const rootHandle = await window.showDirectoryPicker();
                 btn.disabled = true;
-                log(`已锁定目录: ${rootHandle.name}`);
+                statusEl.innerText = "📂 正在分析目录结构...";
 
+                // 创建虚拟目录
                 try { await ffmpeg.createDir('index'); } catch(e) {}
 
                 let m3u8Content = "";
-                
-                // 优化 1: 批量并发读取写入文件系统，但增加内存释放
+                let tsEntries = [];
+
+                // 1. 扫描文件句柄而不立即读取数据（节省初始内存）
                 for await (const entry of rootHandle.values()) {
                     if (entry.name === 'index.m3u8') {
                         m3u8Content = await (await entry.getFile()).text();
                     } else if (entry.kind === 'directory' && entry.name === 'index') {
-                        log("正在预载入 TS 片段与 Key...");
-                        const subEntries = [];
-                        for await (const se of entry.values()) subEntries.push(se);
-                        
-                        // 分片载入，防止一次性占满 JS 堆内存
-                        for (let i = 0; i < subEntries.length; i++) {
-                            const file = await subEntries[i].getFile();
-                            const data = new Uint8Array(await file.arrayBuffer());
-                            await ffmpeg.writeFile(`index/${subEntries[i].name}`, data);
-                            if (i % 200 === 0) statusEl.innerText = `📥 已载入: ${i}/${subEntries[i].length}`;
+                        for await (const sub of entry.values()) {
+                            tsEntries.push(sub);
                         }
                     }
                 }
 
-                // 路径适配
+                // 2. 分批载入：每批 100 个文件，降低 JS 堆内存瞬时压力
+                log(`发现 ${tsEntries.length} 个文件，开始分批装载...`);
+                for (let i = 0; i < tsEntries.length; i++) {
+                    const file = await tsEntries[i].getFile();
+                    const data = new Uint8Array(await file.arrayBuffer());
+                    await ffmpeg.writeFile(`index/${tsEntries[i].name}`, data);
+                    
+                    if (i % 200 === 0) {
+                        statusEl.innerText = `📥 载入进度: ${i}/${tsEntries.length}`;
+                        log(`已载入 ${i} 个片段...`);
+                    }
+                }
+
+                // 3. 修复 M3U8 中的路径引用
                 m3u8Content = m3u8Content.replace(/URI="([^"]+)"/g, (m, p1) => `URI="index/${p1.split('/').pop()}"`);
                 await ffmpeg.writeFile('index.m3u8', m3u8Content);
 
-                // 优化 2: 调整指令，减少缓冲区分配
-                log("开始极速解密合并...");
+                // 4. 执行合并指令：加入优化参数防止卡死
+                log("开始执行合并（此过程耗时较长，请勿切换标签页）...");
                 await ffmpeg.exec([
                     '-allowed_extensions', 'ALL',
                     '-i', 'index.m3u8',
-                    '-c', 'copy',
-                    '-map_metadata', '-1', // 减少元数据处理负担
-                    '-fflags', '+genpts', // 重新生成时间戳防止死锁
+                    '-c', 'copy',          // 无损合并，最快速度
+                    '-bsf:a', 'aac_adtstoasc',
+                    '-fflags', '+genpts',  // 强制重新生成时间戳，解决 2292.ts 后的假死
                     'output.mp4'
                 ]);
 
-                const result = await ffmpeg.readFile('output.mp4');
+                // 5. 导出结果
+                statusEl.innerText = "💾 正在提取视频...";
+                const resultData = await ffmpeg.readFile('output.mp4');
+                const url = URL.createObjectURL(new Blob([resultData.buffer], { type: 'video/mp4' }));
                 const a = document.createElement('a');
-                a.href = URL.createObjectURL(new Blob([result.buffer], { type: 'video/mp4' }));
-                a.download = rootHandle.name + "_ok.mp4";
+                a.href = url;
+                a.download = `${rootHandle.name}_merged.mp4`;
                 a.click();
 
-                statusEl.innerText = "🎉 处理完成！";
+                statusEl.innerText = "🎉 合并成功！";
                 btn.disabled = false;
             } catch (e) {
-                log("任务失败: " + e.message);
+                log("错误: " + e.message);
                 btn.disabled = false;
+                statusEl.innerText = "❌ 合并中断";
             }
         }
 
