@@ -33,7 +33,11 @@ function parseM3u8Info(m3u8Content) {
     for (const line of lines) {
         const l = line.trim();
         if (l.startsWith('#EXTINF:')) {
-            currentDuration = parseFloat(l.split(':')[1]);
+            // 兼容格式: #EXTINF:10.5, 或 #EXTINF:10.5
+            const match = l.match(/#EXTINF:(\d+(\.\d+)?)/);
+            if (match) {
+                currentDuration = parseFloat(match[1]);
+            }
         } else if (!l.startsWith('#') && l !== '') {
             // 这是一个文件行
             if (currentDuration > 0) {
@@ -195,18 +199,15 @@ async function initCore() {
         // 目的：在 WASM 编译卡顿前，先让用户看到密集的进度变化，消除焦虑
         // ==========================================
         const fakeSteps = [
-            { txt: "正在进行环境自检...", pct: 5 },
-            { txt: "校验核心文件完整性...", pct: 15 },
-            { txt: "分配虚拟内存空间...", pct: 25 },
-            { txt: "预热 WebAssembly 编译器...", pct: 35 },
-            { txt: "正在编译核心组件 (CPU密集)...", pct: 50 },
+            { txt: "正在进行环境自检...", pct: 10 },
+            { txt: "预热 WebAssembly 编译器...", pct: 30 },
             { txt: "准备启动多线程引擎...", pct: 60 }
         ];
 
         for (const step of fakeSteps) {
             UI.updateProgress(step.txt, step.pct);
-            // 人为制造“快速处理”的视觉感，每步停留 100-200ms
-            await new Promise(r => setTimeout(r, 150)); 
+            // 增加停留时间，让用户看清文字
+            await new Promise(r => setTimeout(r, 800)); 
         }
 
         // ==========================================
@@ -222,7 +223,7 @@ async function initCore() {
             "解析二进制指令集..."
         ];
         
-        // 启动慢速模拟器 (每 3 秒跳一次，防止闪烁)
+        // 启动慢速模拟器
         const compileTimer = setInterval(() => {
             if (compileProgress < 88) { // 留一点空间给真实启动
                 compileProgress += Math.random() * 5; // 每次跳 0-5%
@@ -266,7 +267,7 @@ async function initCore() {
                     const realPct = base + Math.round((safeCount / totalWorkers) * range);
                     
                     UI.updateProgress(
-                        `正在启动计算单元: ${safeCount}/${totalWorkers} 线程就绪`, 
+                        `正在启动计算单元: ${safeCount}/${totalWorkers} 线程就绪`,
                         realPct
                     );
                 }, { once: true });
@@ -297,7 +298,8 @@ async function initCore() {
         if (RUN_BTN) { RUN_BTN.disabled = false; RUN_BTN.innerText = "选择文件夹并开始"; }
         UI.setStep(2); // 进度条下方步骤切换
     } catch (e) { UI.writeLog("初始化失败: " + e.message); }
-}/**
+}
+/**
  * 引擎下载逻辑：支持 Cache API 实现离线秒开
  */
 async function fetchWithProgress(url, name, fixedSize) {
@@ -431,10 +433,15 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 // 2. 合并阶段
                 UI.updateProgress(`开始合并 (Part ${i+1})...`, 5 + Math.round((previousBatchesDuration / taskDuration) * 95));
-                UI.writeLog(`[状态] 启动内核合并 (Part ${i+1}), 预计分段时长: ${batch.duration.toFixed(1)}s`);
-
+                
                 // 使用新函数生成正确的 M3U8
                 const filteredM3u8 = generateBatchM3u8(headers, segments, batchFilesSet);
+                
+                // DEBUG: 打印 M3U8 内容以排查 Invalid data
+                console.log("------------------- M3U8 PREVIEW -------------------");
+                console.log(filteredM3u8.slice(0, 500) + "\n... (truncated)");
+                console.log("----------------------------------------------------\n");
+
                 await safeWriteFile('temp.m3u8', new TextEncoder().encode(filteredM3u8));
 
                 await ffmpeg.exec(['-allowed_extensions', 'ALL', '-i', 'temp.m3u8', '-c', 'copy', '-fflags', '+genpts+igndts', partName]);
