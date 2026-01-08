@@ -70,7 +70,7 @@
             try {
                 log("1. 加载主脚本...");
                 const script = document.createElement('script');
-                script.src = '/ffmpeg.min.js';
+                script.src = '/ffmpeg.js';
                 document.head.appendChild(script);
                 await new Promise(r => script.onload = r);
 
