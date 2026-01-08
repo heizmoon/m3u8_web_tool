@@ -9,60 +9,90 @@
     <div class="app-container">
         <aside class="sidebar">
             <div class="brand">🎬 M3U8 Pro</div>
+            <select id="lang-select" class="lang-selector">
+                <option value="zh-CN">简体中文</option>
+                <option value="zh-TW">繁體中文</option>
+                <option value="en">English</option>
+            </select>
             <div class="stepper" id="stepper-ui">
-                <div class="stepper-title">步骤说明：</div>
-                <div class="step active" id="step-1"><span class="step-num">1</span> 等待内核加载</div>
+                <div class="stepper-title" data-i18n="step_title">步骤说明：</div>
+                <div class="step active" id="step-1"><span class="step-num">1</span> <span data-i18n="step_1">等待内核加载</span></div>
                 <div class="step-arrow">⬇️</div>
-                <div class="step" id="step-2"><span class="step-num">2</span> 选择源文件夹</div>
+                <div class="step" id="step-2"><span class="step-num">2</span> <span data-i18n="step_2">选择源文件夹</span></div>
                 <div class="step-arrow">⬇️</div>
-                <div class="step" id="step-3"><span class="step-num">3</span> 等待自动下载</div>
+                <div class="step" id="step-3"><span class="step-num">3</span> <span data-i18n="step_3">等待自动下载</span></div>
             </div>
             
             <div class="info-card" id="info-card-box">
                 </div>
             
             <div class="warning-card">
-                <h4>⚠️ 防拦截提示</h4>
-                <p>若浏览器弹出“允许下载多个文件”，请务必点击允许。</p>
+                <h4 data-i18n="warn_title">⚠️ 防拦截提示</h4>
+                <p data-i18n="warn_text">若浏览器弹出“允许下载多个文件”，请务必点击允许。</p>
             </div>
         </aside>
 
         <main class="main-content">
             <nav class="tabs">
-                <button class="tab-btn active" data-tab="m3u8-tab">M3U8 自动化合并</button>
-                <button class="tab-btn" data-tab="mp4-tab">本地分段拼合</button>
+                <button class="tab-btn active" data-tab="m3u8-tab" data-i18n="tab_m3u8">M3U8 自动化合并</button>
+                <button class="tab-btn" data-tab="mp4-tab" data-i18n="tab_mp4">本地分段拼合</button>
             </nav>
 
             <section id="m3u8-tab" class="tab-panel active">
                 <div class="status-monitor">
                     <div class="loader-ui">
                         <div class="progress-info">
-                            <span id="task-name">引擎准备中...</span>
+                            <span id="task-name" data-i18n="engine_preparing">引擎准备中...</span>
                             <span id="task-pct">0%</span>
                         </div>
                         <div class="bar-bg"><div id="task-bar" class="bar-fill"></div></div>
                     </div>
                     <div class="stats-grid">
-                        <div class="stat-item">时长: <b id="stat-time">-</b></div>
-                        <div class="stat-item">体积: <b id="stat-size">-</b></div>
-                        <div class="stat-item">速度: <b id="stat-speed">-</b></div>
+                        <div class="stat-item"><span data-i18n="stat_time">时长</span>: <b id="stat-time">-</b></div>
+                        <div class="stat-item"><span data-i18n="stat_size">体积</span>: <b id="stat-size">-</b></div>
+                        <div class="stat-item"><span data-i18n="stat_speed">速度</span>: <b id="stat-speed">-</b></div>
                     </div>
                 </div>
-                <button id="runBtn" class="primary-btn" disabled>初始化中...</button>
-                <div class="hint-text">智能体积感应：超大视频自动分段，小体积视频无损合一</div>
+                <button id="runBtn" class="primary-btn" disabled data-i18n="btn_init">初始化中...</button>
+                <div class="hint-text" data-i18n="hint_smart">智能体积感应：超大视频自动分段，小体积视频无损合一</div>
             </section>
 
             <section id="mp4-tab" class="tab-panel">
                 <div class="info-alert" id="mp4-info-box">
                     </div>
-                <button id="mergeMp4Btn" class="secondary-btn">🧩 选中本地 MP4 文件并拼合</button>
+                <button id="mergeMp4Btn" class="secondary-btn" data-i18n="btn_merge_mp4">🧩 选中本地 MP4 文件并拼合</button>
             </section>
 
             <div class="terminal-container">
-                <div class="terminal-header">系统日志输出</div>
+                <div class="terminal-header" data-i18n="log_title">系统日志输出</div>
                 <div id="log"></div>
             </div>
         </main>
+
+        <aside class="ads-sidebar">
+            <div class="ad-card">
+                <div class="ad-label" data-i18n="ad_label">广告</div>
+                <div class="ad-content" style="background: linear-gradient(135deg, #FF6B6B 0%, #EE5D5D 100%); color: white;">
+                    <h3 data-i18n="ad1_title">🚀 极速 VPN</h3>
+                    <p data-i18n="ad1_text">海外视频流畅看，不卡顿！</p>
+                    <button class="ad-btn" data-i18n="ad_btn_try">免费试用</button>
+                </div>
+            </div>
+            
+            <div class="ad-card">
+                <div class="ad-label" data-i18n="ad_label">广告</div>
+                <div class="ad-content" style="background: linear-gradient(135deg, #4FACFE 0%, #00F2FE 100%); color: white;">
+                    <h3 data-i18n="ad2_title">🎮 云游戏平台</h3>
+                    <p data-i18n="ad2_text">无需显卡，畅玩 3A 大作</p>
+                    <button class="ad-btn" data-i18n="ad_btn_go">立即体验</button>
+                </div>
+            </div>
+
+            <div class="ad-card placeholder-ad">
+                <div class="ad-label" data-i18n="ad_sponsor">赞助</div>
+                <p data-i18n="ad_placeholder">此处虚位以待<br>联系我们投放</p>
+            </div>
+        </aside>
     </div>
 
     <script src="./ffmpeg.js"></script>

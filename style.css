@@ -312,6 +312,90 @@ body {
     word-break: break-all;
 }
 
+/* ==========================================================================
+   右侧广告栏 (Ads Sidebar)
+   ========================================================================== */
+.ads-sidebar {
+    width: 280px;
+    background-color: var(--sidebar-bg);
+    border-left: 1px solid var(--border-color);
+    padding: 24px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    flex-shrink: 0;
+    overflow-y: auto;
+}
+
+.ad-card {
+    position: relative;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    background: #fff;
+    box-shadow: var(--shadow-sm);
+    border: 1px solid var(--border-color);
+    transition: transform 0.2s;
+}
+
+.ad-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+}
+
+.ad-label {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    background: rgba(0, 0, 0, 0.3);
+    color: white;
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    z-index: 10;
+}
+
+.ad-content {
+    padding: 20px;
+    text-align: center;
+}
+
+.ad-content h3 {
+    margin: 0 0 8px 0;
+    font-size: 16px;
+}
+
+.ad-content p {
+    margin: 0 0 16px 0;
+    font-size: 12px;
+    opacity: 0.9;
+}
+
+.ad-btn {
+    background: white;
+    color: #333;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: bold;
+    cursor: pointer;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.placeholder-ad {
+    background-color: #f1f5f9;
+    border: 2px dashed #cbd5e1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 150px;
+    color: #94a3b8;
+    text-align: center;
+    font-size: 13px;
+    box-shadow: none;
+}
+.placeholder-ad:hover { transform: none; }
+
 /* 动画效果 */
 @keyframes bounce {
     0%, 20%, 50%, 80%, 100% { transform: translateY(0); }
