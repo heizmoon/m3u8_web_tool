@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>M3U8 商业化合并工具</title>
+    <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/ffmpeg.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/dist/index.min.js"></script>
+    <style>
+        body { font-family: system-ui; background: #fafafa; display: flex; justify-content: center; padding: 50px; }
+        .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.08); width: 500px; }
+        .btn { background: #0070f3; color: white; border: none; padding: 12px; border-radius: 7px; width: 100%; cursor: pointer; font-size: 16px; }
+        #log { background: #000; color: #0f0; padding: 10px; height: 150px; overflow: auto; margin-top: 20px; font-size: 12px; border-radius: 5px; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>🎬 M3U8 合并器</h2>
+        <button id="btn" class="btn">选择文件夹开始</button>
+        <div id="log">等待内核加载...</div>
+        <div id="out" style="display:none; margin-top:20px; text-align:center;">
+            <a id="dl" href="#" style="color:#0070f3; font-weight:bold;">✅ 合并完成，点击下载 MP4</a>
+        </div>
+    </div>
+
+    <script>
+        // 关键修复：Vercel 部署环境下的变量引用
+        const { FFmpeg } = FFmpegWASM || {}; 
+        const ffmpeg = new FFmpeg();
+
+        const log = (m) => { document.getElementById('log').innerText += `\n> ${m}`; };
+
+        async function init() {
+            try {
+                await ffmpeg.load({
+                    coreURL: 'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/ffmpeg-core.js',
+                });
+                log("内核加载成功！");
+            } catch (e) { log("加载失败，请刷新或更换浏览器"); }
+        }
+
+        document.getElementById('btn').onclick = async () => {
+            try {
+                const handle = await window.showDirectoryPicker();
+                log("获取文件夹成功");
+                
+                // 读取 index.m3u8 并处理 index 目录
+                const m3u8H = await handle.getFileHandle('index.m3u8');
+                await ffmpeg.writeFile('index.m3u8', new Uint8Array(await (await m3u8H.getFile()).arrayBuffer()));
+                
+                await ffmpeg.createDir('index');
+                const idxDir = await handle.getDirectoryHandle('index');
+                for await (const entry of idxDir.values()) {
+                    if (entry.kind === 'file') {
+                        const data = new Uint8Array(await (await entry.getFile()).arrayBuffer());
+                        await ffmpeg.writeFile(`index/${entry.name}`, data);
+                        log(`载入: ${entry.name}`);
+                    }
+                }
+
+                log("正在解密合并...");
+                await ffmpeg.exec(['-i', 'index.m3u8', '-c', 'copy', 'out.mp4']);
+                
+                const data = await ffmpeg.readFile('out.mp4');
+                const url = URL.createObjectURL(new Blob([data.buffer], {type: 'video/mp4'}));
+                document.getElementById('dl').href = url;
+                document.getElementById('dl').download = "video.mp4";
+                document.getElementById('out').style.display = 'block';
+                log("完成！");
+            } catch (e) { log("操作取消或出错: " + e.message); }
+        };
+        init();
+    </script>
+</body>
+</html>
