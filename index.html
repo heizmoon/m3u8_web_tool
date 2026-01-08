@@ -6,76 +6,141 @@
     <style>
         body { font-family: system-ui; text-align: center; padding: 40px; background: #f4f4f4; }
         .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); display: inline-block; width: 420px; }
-        #log { background: #111; color: #0f0; padding: 15px; height: 180px; overflow-y: auto; text-align: left; font-size: 11px; margin-top: 20px; border-radius: 5px; font-family: monospace; }
+        #log { background: #111; color: #0f0; padding: 15px; height: 180px; overflow-y: auto; text-align: left; font-size: 11px; margin-top: 20px; border-radius: 5px; font-family: monospace; white-space: pre-wrap; word-break: break-all; }
         .btn { background: #0070f3; color: white; border: none; padding: 12px; border-radius: 6px; cursor: pointer; width: 100%; font-size: 16px; margin-top: 10px; }
-        .btn:disabled { background: #ccc; }
+        .btn:disabled { background: #ccc; cursor: not-allowed; }
+        
+        /* 进度条样式 */
+        .progress-container { width: 100%; background: #eee; border-radius: 5px; margin-top: 15px; display: none; height: 12px; overflow: hidden; }
+        .progress-bar { width: 0%; height: 100%; background: #0070f3; transition: width 0.2s; }
     </style>
 </head>
 <body>
     <div class="card">
         <h3>🎬 M3U8 合并助手</h3>
-        <div id="status" style="margin-bottom: 10px; font-weight: bold; color: #666;">正在加载组件...</div>
-        <button id="runBtn" class="btn" disabled>内核加载中...</button>
-        <div id="log">系统准备中...</div>
+        <div id="status" style="margin-bottom: 10px; font-weight: bold; color: #666;">系统准备中...</div>
+        
+        <div id="progressContainer" class="progress-container">
+            <div id="progressBar" class="progress-bar"></div>
+        </div>
+
+        <button id="runBtn" class="btn" disabled>正在初始化...</button>
+        <div id="log">正在启动引擎...</div>
     </div>
 
     <script>
-        const log = (m) => { document.getElementById('log').innerText += `\n> ${m}`; };
         const statusEl = document.getElementById('status');
+        const logEl = document.getElementById('log');
         const btn = document.getElementById('runBtn');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressBar = document.getElementById('progressBar');
 
-        // 动态加载脚本函数，确保捕获加载失败
-        function loadScript(src) {
-            return new Promise((resolve, reject) => {
-                const script = document.createElement('script');
-                script.src = src;
-                script.onload = resolve;
-                script.onerror = () => reject(new Error(`无法加载脚本: ${src}`));
-                document.head.appendChild(script);
-            });
+        const log = (m) => {
+            logEl.innerText += `\n> ${m}`;
+            logEl.scrollTop = logEl.scrollHeight;
+        };
+
+        // 封装 fetch 以支持进度显示
+        async function fetchWithProgress(url, name) {
+            const response = await fetch(url);
+            const reader = response.body.getReader();
+            const contentLength = +response.headers.get('Content-Length');
+            
+            if (!contentLength) log(`警告: 无法获取 ${name} 的文件大小，进度条将失效`);
+
+            let receivedLength = 0;
+            let chunks = [];
+            
+            while(true) {
+                const {done, value} = await reader.read();
+                if (done) break;
+                chunks.push(value);
+                receivedLength += value.length;
+                
+                if (contentLength) {
+                    const percent = Math.round((receivedLength / contentLength) * 100);
+                    progressBar.style.width = percent + '%';
+                    statusEl.innerText = `⏳ 正在下载 ${name}: ${percent}%`;
+                }
+            }
+
+            const allChunks = new Uint8Array(receivedLength);
+            let position = 0;
+            for(let chunk of chunks) {
+                allChunks.set(chunk, position);
+                position += chunk.length;
+            }
+            
+            return URL.createObjectURL(new Blob([allChunks.buffer], { type: url.endsWith('.js') ? 'text/javascript' : 'application/wasm' }));
         }
 
         async function initSystem() {
             try {
-                log("正在拉取核心引导程序...");
-                // 强制从根目录加载
-                await loadScript('/ffmpeg.min.js');
-                log("引导程序已加载，正在识别对象...");
+                // 1. 加载 ffmpeg.min.js
+                log("加载引导程序...");
+                const script = document.createElement('script');
+                script.src = '/ffmpeg.min.js';
+                document.head.appendChild(script);
+                
+                await new Promise((resolve) => script.onload = resolve);
 
-                // 兼容性识别逻辑
                 const FF = window.FFmpegWASM || window.FFmpeg;
-                if (!FF) throw new Error("脚本已下载但未定义 FFmpegWASM 对象");
+                if (!FF) throw new Error("FFmpeg 对象未定义，请检查 ffmpeg.min.js 是否正确版本");
 
                 const ffmpeg = new FF.FFmpeg();
-                log("正在初始化 WASM 内核 (约 25MB)...");
+                
+                // 监听内核日志
+                ffmpeg.on('log', ({ message }) => log(`[FFmpeg] ${message}`));
 
+                // 2. 预下载核心文件并显示进度
+                progressContainer.style.display = 'block';
+                
+                log("下载 WASM 内核 (约 30MB)...");
+                const wasmBlobUrl = await fetchWithProgress('/ffmpeg-core.wasm', '内核');
+                
+                log("下载核心调度器...");
+                const coreBlobUrl = await fetchWithProgress('/ffmpeg-core.js', '调度器');
+                
+                log("下载并行插件...");
+                const workerBlobUrl = await fetchWithProgress('/ffmpeg-core.worker.js', '并行插件');
+
+                // 3. 启动内核
+                statusEl.innerText = "🚀 正在启动内核...";
                 await ffmpeg.load({
-                    coreURL: window.location.origin + '/ffmpeg-core.js',
-                    wasmURL: window.location.origin + '/ffmpeg-core.wasm',
-                    workerURL: window.location.origin + '/ffmpeg-core.worker.js'
+                    coreURL: coreBlobUrl,
+                    wasmURL: wasmBlobUrl,
+                    workerURL: workerBlobUrl
                 });
 
+                // 4. 完成初始化
+                progressContainer.style.display = 'none';
                 statusEl.innerText = "✅ 系统就绪";
                 statusEl.style.color = "green";
                 btn.innerText = "选择文件夹并合并";
                 btn.disabled = false;
-                log("所有组件加载成功！");
+                log("所有组件加载成功，等待用户操作。");
 
-                // 绑定点击事件
+                // 绑定点击事件 (此处保留你原有的 M3U8 处理逻辑)
                 btn.onclick = async () => {
-                    const handle = await window.showDirectoryPicker();
-                    log("开始处理文件夹: " + handle.name);
-                    // ... 此处保持之前的读取逻辑 ...
+                    try {
+                        const handle = await window.showDirectoryPicker();
+                        log("已选择文件夹: " + handle.name);
+                        // 处理逻辑...
+                    } catch (e) {
+                        log("操作取消或失败: " + e.message);
+                    }
                 };
 
             } catch (err) {
+                progressContainer.style.display = 'none';
                 statusEl.innerText = "❌ 启动失败";
                 statusEl.style.color = "red";
                 log("错误详情: " + err.message);
-                log("建议：检查文件是否存在于根目录，或尝试更换 Chrome 浏览器。");
+                console.error(err);
             }
         }
 
+        // 启动系统
         initSystem();
     </script>
 </body>
