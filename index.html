@@ -40,31 +40,43 @@
     </div>
 
     <script>
-        // 检测全局变量
-        const { FFmpeg } = window.FFmpegWASM || window.FFmpeg || {};
-        if (!FFmpeg) {
-            document.getElementById('log').innerText = "❌ 错误：无法识别 FFmpeg 库。请确认 ffmpeg.min.js 在根目录且加载成功。";
-        }
-        
-        const ffmpeg = new FFmpeg();
+    // 1. 完善的库对象识别逻辑
+    let FFmpegClass;
+    
+    // 延迟到页面完全加载后执行，确保脚本已解析
+    window.onload = async () => {
         const logEl = document.getElementById('log');
         const btn = document.getElementById('runBtn');
         const statusEl = document.getElementById('status');
-        const progressBar = document.getElementById('progressBar');
-        const progressWrap = document.getElementById('progressWrap');
 
         const addLog = (msg) => {
-            const time = new Date().toLocaleTimeString().split(' ')[0];
-            logEl.innerText += `\n[${time}] ${msg}`;
+            logEl.innerText += `\n> ${msg}`;
             logEl.scrollTop = logEl.scrollHeight;
         };
 
-        // 初始化内核
+        // 识别新版 v0.12 的全局变量层级
+        if (window.FFmpegWASM && window.FFmpegWASM.FFmpeg) {
+            FFmpegClass = window.FFmpegWASM.FFmpeg;
+        } else if (window.FFmpeg) {
+            // 兼容某些 UMD 打包格式
+            FFmpegClass = (typeof window.FFmpeg === 'function') 
+                          ? window.FFmpeg 
+                          : window.FFmpeg.FFmpeg;
+        }
+
+        if (!FFmpegClass) {
+            statusEl.innerText = "❌ 无法识别库对象";
+            addLog("错误：识别到脚本但无法找到 FFmpeg 构造函数。");
+            return;
+        }
+
+        // 2. 正确实例化
+        const ffmpeg = new FFmpegClass();
+        addLog("库对象识别成功，正在载入内核...");
+
         async function init() {
             try {
                 const baseURL = window.location.origin;
-                addLog("正在从本地仓库载入核心组件...");
-                
                 await ffmpeg.load({
                     coreURL: `${baseURL}/ffmpeg-core.js`,
                     wasmURL: `${baseURL}/ffmpeg-core.wasm`,
@@ -74,85 +86,53 @@
                 statusEl.innerText = "● 内核已就绪";
                 statusEl.className = "status-pill status-ready";
                 btn.disabled = false;
-                addLog("初始化成功！当前模式：高效率多线程处理。");
+                addLog("初始化成功！可以开始合并。");
             } catch (e) {
-                statusEl.innerText = "● 初始化失败";
-                statusEl.className = "status-pill status-error";
-                addLog(`错误详情: ${e.message}`);
-                addLog("请检查：1. 是否上传了 vercel.json 2. 是否使用 HTTPS 访问。");
-                console.error(e);
+                statusEl.innerText = "● 加载失败";
+                addLog("错误: " + e.message);
             }
         }
 
-        // 监听 FFmpeg 输出日志（用于商业化 UI 反馈）
-        ffmpeg.on('log', ({ message }) => {
-            if (message.includes('time=')) {
-                // 简单的进度显示逻辑
-                addLog(message); 
-            }
-        });
-
-        document.getElementById('runBtn').onclick = async () => {
+        // 3. 绑定按钮事件
+        btn.onclick = async () => {
             try {
                 const handle = await window.showDirectoryPicker();
                 btn.disabled = true;
-                progressWrap.style.display = 'block';
-                progressBar.style.width = '10%';
-                
-                addLog(`已获得授权: ${handle.name}`);
+                addLog(`处理中: ${handle.name}`);
 
-                // 1. 读取主文件
-                const m3u8H = await handle.getFileHandle('index.m3u8');
-                const m3u8Data = await (await m3u8H.getFile()).arrayBuffer();
-                await ffmpeg.writeFile('index.m3u8', new Uint8Array(m3u8Data));
-                addLog("读取 index.m3u8 完成");
-                progressBar.style.width = '30%';
+                // 读取 index.m3u8
+                const m3u8File = await (await handle.getFileHandle('index.m3u8')).getFile();
+                await ffmpeg.writeFile('index.m3u8', new Uint8Array(await m3u8File.arrayBuffer()));
 
-                // 2. 载入分片 (对应 index/0.key 结构)
+                // 写入 index 目录
                 await ffmpeg.createDir('index');
                 const subDir = await handle.getDirectoryHandle('index');
-                addLog("正在扫描并载入本地切片...");
-                
-                let count = 0;
                 for await (const entry of subDir.values()) {
                     if (entry.kind === 'file') {
                         const data = await (await entry.getFile()).arrayBuffer();
                         await ffmpeg.writeFile(`index/${entry.name}`, new Uint8Array(data));
-                        count++;
                     }
                 }
-                addLog(`成功载入 ${count} 个相关文件 (包含 .ts 和 .key)`);
-                progressBar.style.width = '60%';
 
-                // 3. 执行合并命令
-                addLog("🚀 正在解密合并中，请勿关闭页面...");
-                await ffmpeg.exec([
-                    '-allowed_extensions', 'ALL', // 必须开启，否则无法读取 .key
-                    '-i', 'index.m3u8',
-                    '-c', 'copy',
-                    'output.mp4'
-                ]);
+                addLog("执行合并指令...");
+                await ffmpeg.exec(['-allowed_extensions', 'ALL', '-i', 'index.m3u8', '-c', 'copy', 'out.mp4']);
 
-                // 4. 下载结果
-                const result = await ffmpeg.readFile('output.mp4');
+                const result = await ffmpeg.readFile('out.mp4');
                 const url = URL.createObjectURL(new Blob([result.buffer], { type: 'video/mp4' }));
-                
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `M3U8合并_${new Date().getTime()}.mp4`;
+                a.download = "merged.mp4";
                 a.click();
-                
-                progressBar.style.width = '100%';
-                addLog("🎉 合并成功！文件已开始下载。");
-                btn.disabled = false;
+                addLog("✅ 完成！");
             } catch (err) {
-                addLog(`❌ 失败: ${err.message}`);
+                addLog("❌ " + err.message);
+            } finally {
                 btn.disabled = false;
-                progressWrap.style.display = 'none';
             }
         };
 
         init();
-    </script>
+    };
+</script>
 </body>
 </html>
