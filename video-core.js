@@ -1,10 +1,21 @@
-let ffmpeg = null; // 仅保留一个声明
+// 1. 首先删除文件开头重复的 let ffmpeg = null;
+let ffmpeg = null; 
 const RUN_BTN = document.getElementById('runBtn');
-const FIXED_ENGINE_SIZE = 31.2 * 1024 * 1024; // 固定 31.2MB 逻辑
+const FIXED_ENGINE_SIZE = 31.2 * 1024 * 1024;
 
-/**
- * 内核初始化：拆分加载步骤
- */
+// 新增解耦辅助函数：无论路径是什么，自动创建目录防止卡死
+async function safeWriteFile(path, data) {
+    const parts = path.split('/');
+    if (parts.length > 1) {
+        let currentPath = "";
+        for (let i = 0; i < parts.length - 1; i++) {
+            currentPath += (currentPath ? "/" : "") + parts[i];
+            try { await ffmpeg.createDir(currentPath); } catch (e) {}
+        }
+    }
+    return await ffmpeg.writeFile(path, data);
+}
+
 async function initCore() {
     try {
         const { FFmpeg } = window.FFmpegWASM || window.FFmpeg;
@@ -15,30 +26,38 @@ async function initCore() {
             if (message.includes('frame=')) UI.updateStatsFromLog(message);
         });
 
-        // 1. 下载阶段：固定显示 31.2MB
+        // 下载阶段
         const wasmURL = await fetchWithProgress('./ffmpeg-core.wasm', '引擎内核', FIXED_ENGINE_SIZE);
         
-        // 2. 加载阶段：拆分显示进程数
         UI.updateProgress("正在加载核心组件 (1/3): ffmpeg-core.js", 96);
-        const coreURL = './ffmpeg-core.js';
-        
         UI.updateProgress("正在加载核心组件 (2/3): ffmpeg-worker.js", 98);
-        const workerURL = './ffmpeg-core.worker.js';
 
-        UI.updateProgress("正在初始化引擎 (3/3): 环境部署", 99);
-        await ffmpeg.load({ coreURL, wasmURL, workerURL });
+        // 优化 3/3 阶段：捕获 Worker 启动计数
+        let workerCount = 0;
+        const totalWorkers = navigator.hardwareConcurrency || 4; // 通常取决于 CPU 核心数
+        
+        UI.updateProgress(`正在初始化引擎 (3/3): 已启动 0/${totalWorkers} 线程`, 99);
+
+        // 监听 Worker 启动（解耦式监听）
+        const originalWorker = window.Worker;
+        window.Worker = function(scriptURL, options) {
+            if (scriptURL.toString().includes('ffmpeg')) {
+                workerCount++;
+                UI.updateProgress(`正在初始化引擎 (3/3): 已启动 ${workerCount}/${totalWorkers} 线程`, 99);
+            }
+            return new originalWorker(scriptURL, options);
+        };
+
+        await ffmpeg.load({ coreURL: './ffmpeg-core.js', wasmURL, workerURL: './ffmpeg-core.worker.js' });
+        
+        // 恢复原始 Worker
+        window.Worker = originalWorker;
 
         UI.updateProgress("准备就绪", 100);
-        if (RUN_BTN) {
-            RUN_BTN.disabled = false;
-            RUN_BTN.innerText = "选择文件夹并开始";
-        }
-        UI.setStep(2);
-    } catch (e) { 
-        UI.writeLog("初始化失败: " + e.message); 
-    }
+        if (RUN_BTN) { RUN_BTN.disabled = false; RUN_BTN.innerText = "选择文件夹并开始"; }
+        UI.setStep(2); // 进度条下方步骤切换
+    } catch (e) { UI.writeLog("初始化失败: " + e.message); }
 }
-
 /**
  * 引擎下载逻辑：修复数值错误
  */
@@ -169,34 +188,5 @@ function splitBatches(list, limit) {
     }
     if(cur.length) res.push(cur);
     return res;
-}
-async function prepareVFSPath(filePath) {
-    const folders = filePath.split('/');
-    if (folders.length > 1) {
-        let currentPath = "";
-        for (let i = 0; i < folders.length - 1; i++) {
-            currentPath += (currentPath ? "/" : "") + folders[i];
-            try {
-                await ffmpeg.createDir(currentPath);
-            } catch (e) {
-                // 文件夹已存在则跳过
-            }
-        }
-    }
-}
-// 核心解耦辅助：自动根据路径创建 VFS 目录
-async function safeWriteFile(path, data) {
-    const parts = path.split('/');
-    if (parts.length > 1) {
-        let currentPath = "";
-        for (let i = 0; i < parts.length - 1; i++) {
-            currentPath += (currentPath ? "/" : "") + parts[i];
-            try {
-                // 如果目录不存在，ffmpeg 会报错，这里 catch 住保证流程继续
-                await ffmpeg.createDir(currentPath);
-            } catch (e) {}
-        }
-    }
-    return await safeWriteFile(path, data);
 }
 initCore();
