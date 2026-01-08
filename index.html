@@ -153,60 +153,85 @@
         }
     }
 
-    async function startProcess() {
+   async function startProcess() {
+    // 统一定义状态更新函数，避免变量名未定义错误
+    const updateStatus = (text) => {
+        const el = document.getElementById('status');
+        if (el) el.innerText = text;
+    };
+
     try {
         const dirHandle = await window.showDirectoryPicker();
         btn.disabled = true;
         log(`已锁定目录: ${dirHandle.name}`);
 
+        // 1. 初始化虚拟目录
+        try { await ffmpeg.createDir('index'); } catch(e) {}
+
         let m3u8Content = "";
         let allTsFiles = [];
+        let keyFile = null;
 
-        // 1. 扫描文件
+        // 2. 扫描文件句柄（暂不读取数据以节省内存）
+        updateStatus("📂 正在扫描目录结构...");
         for await (const entry of dirHandle.values()) {
             if (entry.name === 'index.m3u8') {
                 m3u8Content = await (await entry.getFile()).text();
             } else if (entry.name === 'index' && entry.kind === 'directory') {
                 for await (const sub of entry.values()) {
                     if(sub.name.endsWith('.ts')) allTsFiles.push(sub);
-                    if(sub.name.endsWith('.key')) await ffmpeg.writeFile(`index/${sub.name}`, new Uint8Array(await (await sub.getFile()).arrayBuffer()));
+                    if(sub.name.endsWith('.key')) keyFile = sub;
                 }
             }
         }
 
-        // 自然排序确保顺序正确
+        // 自然排序：1.ts, 2.ts... 2859.ts
         allTsFiles.sort((a, b) => a.name.localeCompare(b.name, undefined, {numeric: true, sensitivity: 'base'}));
 
+        // 3. 预载入 Key 文件（两部分共用）
+        if (keyFile) {
+            const kData = new Uint8Array(await (await keyFile.getFile()).arrayBuffer());
+            await ffmpeg.writeFile(`index/${keyFile.name}`, kData);
+            log("密钥文件已载入内存");
+        }
+
         const total = allTsFiles.length;
-        const needsSplit = total > 2000;
-        log(`总片段数: ${total}，${needsSplit ? '检测到大文件，启用自动分段合并模式' : '采用常规合并模式'}`);
+        const limit = 1500; // 降低阈值到 1500 以确保 32 位 WASM 内存安全
+        const needsSplit = total > limit;
+        
+        log(`总片段数: ${total}，${needsSplit ? '检测到超长视频，启用二段式处理模式' : '采用常规处理模式'}`);
 
         if (needsSplit) {
             const mid = Math.floor(total / 2);
             const part1 = allTsFiles.slice(0, mid);
             const part2 = allTsFiles.slice(mid);
 
-            // 处理第一部分
-            statusEl.innerText = "🛠 正在处理前半部分 (1/3)...";
-            await processBatch(part1, m3u8Content, "part_a.mp4");
+            // --- 第一阶段 ---
+            updateStatus("🛠 正在处理前半部分 (1/3)...");
+            await processBatch(part1, m3u8Content, "part_a.mp4", updateStatus);
             
-            // 重要：清理第一部分的 TS 内存
-            for(const f of part1) await ffmpeg.deleteFile(`index/${f.name}`);
+            // 极致内存清理：删除第一部分的所有虚拟 TS 文件
+            log("正在释放前半部分内存...");
+            for(const f of part1) {
+                try { await ffmpeg.deleteFile(`index/${f.name}`); } catch(e) {}
+            }
             
-            // 处理第二部分
-            statusEl.innerText = "🛠 正在处理后半部分 (2/3)...";
-            await processBatch(part2, m3u8Content, "part_b.mp4");
+            // --- 第二阶段 ---
+            updateStatus("🛠 正在处理后半部分 (2/3)...");
+            await processBatch(part2, m3u8Content, "part_b.mp4", updateStatus);
 
-            // 最终合并
-            statusEl.innerText = "🔗 正在执行最终拼合 (3/3)...";
-            await ffmpeg.writeFile('concat.txt', "file 'part_a.mp4'\nfile 'part_b.mp4'");
-            await ffmpeg.exec(['-f', 'concat', '-i', 'concat.txt', '-c', 'copy', 'final.mp4']);
+            // --- 第三阶段：无损拼接 ---
+            updateStatus("🔗 正在执行最终拼合 (3/3)...");
+            const concatContent = "file 'part_a.mp4'\nfile 'part_b.mp4'";
+            await ffmpeg.writeFile('concat.txt', new TextEncoder().encode(concatContent));
+            await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'concat.txt', '-c', 'copy', 'final.mp4']);
         } else {
-            statusEl.innerText = "🛠 正在合并...";
-            await processBatch(allTsFiles, m3u8Content, "final.mp4");
+            updateStatus("🛠 正在合并视频...");
+            await processBatch(allTsFiles, m3u8Content, "final.mp4", updateStatus);
         }
 
-        // 导出
+        // 4. 导出结果
+        updateStatus("💾 正在导出最终文件...");
         const data = await ffmpeg.readFile('final.mp4');
         const url = URL.createObjectURL(new Blob([data.buffer], { type: 'video/mp4' }));
         const a = document.createElement('a');
@@ -214,46 +239,55 @@
         a.download = dirHandle.name + "_merged.mp4";
         a.click();
 
-        statusEl.innerText = "🎉 全能合并完成！";
+        updateStatus("🎉 合并圆满成功！");
         btn.disabled = false;
+        log("所有临时内存已释放。");
+
     } catch (e) {
-        log("操作失败: " + e.message);
+        log("操作失败: " + e.stack || e.message);
         btn.disabled = false;
+        updateStatus("❌ 合并中断");
     }
 }
 
-// 辅助函数：处理单个分块
-async function processBatch(fileList, originalM3u8, outputName) {
-    // 写入当前批次的 TS 文件
+// 辅助函数：处理分块任务
+async function processBatch(fileList, originalM3u8, outputName, updateUI) {
+    // 1. 载入当前批次 TS
     for (let i = 0; i < fileList.length; i++) {
         const file = await fileList[i].getFile();
         await ffmpeg.writeFile(`index/${fileList[i].name}`, new Uint8Array(await file.arrayBuffer()));
+        if (i % 100 === 0) updateUI(`📥 载入数据: ${i}/${fileList.length}`);
     }
 
-    // 生成当前批次的临时 M3U8
-    const tsNames = fileList.map(f => f.name);
+    // 2. 生成适配当前批次的临时 M3U8
+    const tsNames = new Set(fileList.map(f => f.name));
     let lines = originalM3u8.split('\n');
     let newM3u8 = "";
-    let tsIndex = 0;
 
     for (let line of lines) {
+        line = line.trim();
+        if (!line) continue;
+        
         if (line.includes('.ts')) {
-            // 检查当前 M3U8 行中的 TS 是否在当前批次中
-            const currentTsName = line.trim().split('/').pop();
-            if (tsNames.includes(currentTsName)) {
-                newM3u8 += `index/${currentTsName}\n`;
-                tsIndex++;
+            const fileName = line.split('/').pop();
+            // 只保留当前批次内的 TS 文件行
+            if (tsNames.has(fileName)) {
+                newM3u8 += `index/${fileName}\n`;
             }
+        } else if (line.includes('#EXT-X-KEY')) {
+            // 修复 Key 路径
+            newM3u8 += line.replace(/URI="([^"]+)"/g, (m, p1) => `URI="index/${p1.split('/').pop()}"`) + "\n";
+        } else if (line.startsWith('#EXT-X-BYTERANGE')) {
+            // 略过字节范围指令，防止干扰 copy 模式
+            continue;
         } else {
             newM3u8 += line + "\n";
-            // 如果遇到密钥定义，确保路径正确
-            if(line.includes('URI=')) {
-                newM3u8 = newM3u8.replace(/URI="([^"]+)"/g, (m, p1) => `URI="index/${p1.split('/').pop()}"`);
-            }
         }
     }
 
-    await ffmpeg.writeFile('temp.m3u8', newM3u8);
+    await ffmpeg.writeFile('temp.m3u8', new TextEncoder().encode(newM3u8));
+    
+    // 3. 执行 FFmpeg 合并
     await ffmpeg.exec([
         '-allowed_extensions', 'ALL',
         '-i', 'temp.m3u8',
@@ -261,6 +295,8 @@ async function processBatch(fileList, originalM3u8, outputName) {
         '-fflags', '+genpts',
         outputName
     ]);
+
+    // 4. 清理临时清单
     await ffmpeg.deleteFile('temp.m3u8');
 }
 
