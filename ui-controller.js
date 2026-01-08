@@ -24,15 +24,16 @@ const UI = {
     },
 
     // 更新进度条和文字 (1218 / 2299 逻辑在这里实现)
-    updateProgress(text, pct) {
-        const nameEl = document.getElementById('task-name');
-        const pctEl = document.getElementById('task-pct');
-        const barEl = document.getElementById('task-bar');
-        
-        if (nameEl) nameEl.innerText = text;
-        if (pctEl) pctEl.innerText = pct + '%';
-        if (barEl) barEl.style.width = pct + '%';
-    },
+updateProgress(text, pct) {
+    const nameEl = document.getElementById('task-name');
+    const pctEl = document.getElementById('task-pct');
+    const barEl = document.getElementById('task-bar');
+    
+    // 如果 text 包含 "/", 说明是正在处理片段，我们把这个关键信息放在最显眼的地方
+    if (nameEl) nameEl.innerText = text;
+    if (pctEl) pctEl.innerText = pct + '%';
+    if (barEl) barEl.style.width = pct + '%';
+},
 
     // 从 FFmpeg 日志实时提取时长、体积、速度
     updateStatsFromLog(message) {

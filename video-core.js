@@ -101,7 +101,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const m3u8Raw = await (await m3u8File.getFile()).text();
             try { await ffmpeg.createDir('index'); } catch(e){}
-            for(const k of keyFiles) await ffmpeg.writeFile(`index/${k.name}`, new Uint8Array(await (await k.getFile()).arrayBuffer()));
+            for(const k of keyFiles) await safeWriteFile(`index/${k.name}`, new Uint8Array(await (await k.getFile()).arrayBuffer()));
 
             let totalIdx = 0;
             for (let i = 0; i < batches.length; i++) {
@@ -114,12 +114,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     const progressPct = Math.round((totalIdx / tsList.length) * 100);
                     UI.updateProgress(progressText, progressPct);
                     
-                    await ffmpeg.writeFile(`index/${ts.handle.name}`, new Uint8Array(await (await ts.handle.getFile()).arrayBuffer()));
+                    await safeWriteFile(`index/${ts.handle.name}`, new Uint8Array(await (await ts.handle.getFile()).arrayBuffer()));
                 }
 
                 const currentNames = new Set(batch.map(t => t.handle.name));
                 const filtered = m3u8Raw.split('\n').filter(l => l.includes('.ts') ? currentNames.has(l.trim().split('/').pop()) : true).join('\n').replace(/URI="([^"]+)"/g, (m, p) => `URI="index/${p.split('/').pop()}"`);
-                await ffmpeg.writeFile('temp.m3u8', new TextEncoder().encode(filtered));
+                await safeWriteFile('temp.m3u8', new TextEncoder().encode(filtered));
 
                 await ffmpeg.exec(['-allowed_extensions', 'ALL', '-i', 'temp.m3u8', '-c', 'copy', '-fflags', '+genpts+igndts', partName]);
                 const data = await ffmpeg.readFile(partName);
@@ -147,10 +147,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     const f = await files[i].getFile();
                     const vfsName = `m${i}.mp4`;
                     UI.updateProgress(`读取分段: ${i+1} / ${files.length}`, Math.round(((i+1)/files.length)*100));
-                    await ffmpeg.writeFile(vfsName, new Uint8Array(await f.arrayBuffer()));
+                    await safeWriteFile(vfsName, new Uint8Array(await f.arrayBuffer()));
                     listTxt += `file '${vfsName}'\n`;
                 }
-                await ffmpeg.writeFile('list.txt', new TextEncoder().encode(listTxt));
+                await safeWriteFile('list.txt', new TextEncoder().encode(listTxt));
                 await ffmpeg.exec(['-f', 'concat', '-safe', '0', '-i', 'list.txt', '-c', 'copy', 'Total_Merged.mp4']);
                 const data = await ffmpeg.readFile('Total_Merged.mp4');
                 UI.downloadFile(data, "合并结果_Full.mp4");
@@ -170,5 +170,33 @@ function splitBatches(list, limit) {
     if(cur.length) res.push(cur);
     return res;
 }
-
+async function prepareVFSPath(filePath) {
+    const folders = filePath.split('/');
+    if (folders.length > 1) {
+        let currentPath = "";
+        for (let i = 0; i < folders.length - 1; i++) {
+            currentPath += (currentPath ? "/" : "") + folders[i];
+            try {
+                await ffmpeg.createDir(currentPath);
+            } catch (e) {
+                // 文件夹已存在则跳过
+            }
+        }
+    }
+}
+// 核心解耦辅助：自动根据路径创建 VFS 目录
+async function safeWriteFile(path, data) {
+    const parts = path.split('/');
+    if (parts.length > 1) {
+        let currentPath = "";
+        for (let i = 0; i < parts.length - 1; i++) {
+            currentPath += (currentPath ? "/" : "") + parts[i];
+            try {
+                // 如果目录不存在，ffmpeg 会报错，这里 catch 住保证流程继续
+                await ffmpeg.createDir(currentPath);
+            } catch (e) {}
+        }
+    }
+    return await safeWriteFile(path, data);
+}
 initCore();
