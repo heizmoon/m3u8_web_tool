@@ -2,61 +2,111 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>M3U8 Pro - 兼容模式</title>
+    <title>M3U8 Pro - 稳定兼容版</title>
     <style>
         body { font-family: system-ui; text-align: center; padding: 40px; background: #f4f4f4; }
         .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.1); display: inline-block; width: 460px; }
         #log { background: #111; color: #0f0; padding: 15px; height: 200px; overflow-y: auto; text-align: left; font-size: 11px; margin-top: 20px; border-radius: 5px; font-family: monospace; white-space: pre-wrap; }
         .btn { background: #0070f3; color: white; border: none; padding: 12px; border-radius: 6px; cursor: pointer; width: 100%; font-size: 16px; margin-top: 10px; }
         .btn:disabled { background: #ccc; }
+        .progress-container { width: 100%; background: #eee; border-radius: 5px; margin-top: 15px; height: 16px; position: relative; overflow: hidden; }
+        .progress-bar { width: 0%; height: 100%; background: #0070f3; transition: width 0.1s; }
+        .progress-text { position: absolute; width: 100%; text-align: center; font-size: 10px; line-height: 16px; color: #000; font-weight: bold; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h3>🎬 M3U8 合并助手 (单线程模式)</h3>
-        <div id="status" style="margin-bottom: 10px; font-weight: bold; color: #666;">准备启动...</div>
+        <h3>🎬 M3U8 合并助手 (单线程稳定版)</h3>
+        <div id="status" style="margin-bottom: 10px; font-weight: bold; color: #666;">初始化中...</div>
+        <div id="progressContainer" class="progress-container">
+            <div id="progressText" class="progress-text">等待下载...</div>
+            <div id="progressBar" class="progress-bar"></div>
+        </div>
         <button id="runBtn" class="btn" disabled>请稍候...</button>
-        <div id="log">正在检测环境...</div>
+        <div id="log">正在检测系统组件...</div>
     </div>
 
     <script>
         const statusEl = document.getElementById('status');
         const logEl = document.getElementById('log');
         const btn = document.getElementById('runBtn');
+        const progressBar = document.getElementById('progressBar');
+        const progressText = document.getElementById('progressText');
+
         const log = (m) => { logEl.innerText += `\n> ${m}`; logEl.scrollTop = logEl.scrollHeight; };
+
+        // 强力的手动下载器
+        async function fetchWithProgress(url, name, expectedSize) {
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`下载 ${name} 失败: ${response.status}`);
+            
+            const reader = response.body.getReader();
+            const contentLength = +response.headers.get('Content-Length') || expectedSize;
+            let receivedLength = 0;
+            let chunks = [];
+
+            while(true) {
+                const {done, value} = await reader.read();
+                if (done) break;
+                chunks.push(value);
+                receivedLength += value.length;
+                let percent = Math.min(Math.round((receivedLength / Math.max(contentLength, receivedLength)) * 100), 99);
+                progressBar.style.width = percent + '%';
+                progressText.innerText = `${percent}% (${(receivedLength/1024/1024).toFixed(1)}MB)`;
+            }
+
+            progressBar.style.width = '100%';
+            progressText.innerText = '100%';
+            const allChunks = new Uint8Array(receivedLength);
+            let position = 0;
+            for(let chunk of chunks) {
+                allChunks.set(chunk, position);
+                position += chunk.length;
+            }
+            return URL.createObjectURL(new Blob([allChunks.buffer], { type: url.includes('.js') ? 'text/javascript' : 'application/wasm' }));
+        }
 
         async function initSystem() {
             try {
                 log("1. 加载主脚本...");
                 const script = document.createElement('script');
-                script.src = '/ffmpeg.js'; // 确保这是从 @ffmpeg/ffmpeg@0.12.10 下载的 UMD 文件
+                script.src = '/ffmpeg.min.js';
                 document.head.appendChild(script);
                 await new Promise(r => script.onload = r);
 
                 const FF = window.FFmpegWASM || window.FFmpeg;
                 const ffmpeg = new FF.FFmpeg();
-
-                // 打印内部细分日志
                 ffmpeg.on('log', ({ message }) => log(`[内核] ${message}`));
 
-                statusEl.innerText = "🚀 正在初始化内核 (单线程)...";
-                log("2. 正在调用 ffmpeg.load()...");
+                // 2. 强制手动下载单线程内核（确保一定有下载动作）
+                const v = "?t=" + Date.now();
+                log("2. 开始下载 WASM 核心 (单线程版)...");
+                const wasmUrl = await fetchWithProgress('/ffmpeg-core.wasm' + v, '内核', 31000000);
+                
+                log("3. 开始下载 调度脚本...");
+                const coreUrl = await fetchWithProgress('/ffmpeg-core.js' + v, '调度脚本', 100000);
 
-                // 直接使用相对路径，不再使用 Blob 包装（减少跨域安全限制）
+                statusEl.innerText = "🚀 正在挂载内核...";
+                log("4. 正在调用 ffmpeg.load()...");
+
+                // 此时已经拿到了 Blob URL，ffmpeg.load 不再需要发起网络请求
                 await ffmpeg.load({
-                    coreURL: window.location.origin + '/ffmpeg-core.js',
-                    wasmURL: window.location.origin + '/ffmpeg-core.wasm'
+                    coreURL: coreUrl,
+                    wasmURL: wasmUrl
+                    // 单线程模式不传 workerURL
                 });
 
                 statusEl.innerText = "✅ 系统就绪";
                 statusEl.style.color = "green";
                 btn.innerText = "选择文件夹合并";
                 btn.disabled = false;
-                log("3. 初始化圆满完成！");
+                log("5. 内核初始化成功！");
 
                 btn.onclick = async () => {
-                    const handle = await window.showDirectoryPicker();
-                    log("开始处理: " + handle.name);
+                    try {
+                        const handle = await window.showDirectoryPicker();
+                        log("选中文件夹: " + handle.name);
+                    } catch (e) { log("错误: " + e.message); }
                 };
 
             } catch (err) {
