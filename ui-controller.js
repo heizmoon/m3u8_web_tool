@@ -27,46 +27,39 @@ const UI = {
         const nameEl = document.getElementById('task-name');
         const pctEl = document.getElementById('task-pct');
         const barEl = document.getElementById('task-bar');
+        
         if (nameEl) nameEl.innerText = text;
         if (pctEl) pctEl.innerText = pct + '%';
         if (barEl) barEl.style.width = pct + '%';
     },
 
     updateStatsFromLog(message) {
+        // 保持数值更新，如果不匹配则不更新，防止出现 "-"
         const timeMatch = message.match(/time=\s*([\d:.]+)/);
         const sizeMatch = message.match(/size=\s*(\d+)kB/);
         const speedMatch = message.match(/speed=\s*([\d.e+x\s]+)/);
 
         if (timeMatch) document.getElementById('stat-time').innerText = timeMatch[1];
-        if (sizeMatch) document.getElementById('stat-size').innerText = (parseInt(sizeMatch[1]) / 1024).toFixed(1) + ' MB';
+        if (sizeMatch) {
+            const mb = (parseInt(sizeMatch[1]) / 1024).toFixed(1);
+            document.getElementById('stat-size').innerText = mb + ' MB';
+        }
         if (speedMatch) {
             let s = speedMatch[1].trim();
             document.getElementById('stat-speed').innerText = s.includes('e+') ? "高速" : s;
         }
     },
 
-    setStep(stepNumber) {
-        document.querySelectorAll('.step').forEach(s => s.classList.remove('active'));
-        const target = document.getElementById(`step-${stepNumber}`);
-        if (target) target.classList.add('active');
-    },
-
-    writeLog(msg) {
-        const logEl = document.getElementById('log');
-        if (logEl) {
-            logEl.innerText += `\n> ${msg}`;
-            logEl.scrollTop = logEl.scrollHeight;
-        }
-    },
-
     downloadFile(data, fileName) {
+        UI.writeLog(`💾 正在导出文件: ${fileName}`);
         const blob = new Blob([data.buffer], { type: 'video/mp4' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
         a.download = fileName;
         a.click();
-        setTimeout(() => URL.revokeObjectURL(url), 20000);
+        // 增加延时清理，确保大文件下载完成
+        setTimeout(() => URL.revokeObjectURL(url), 30000);
     }
 };
 
