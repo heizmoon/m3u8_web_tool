@@ -96,21 +96,33 @@ async function initCore() {
         // 下载阶段：独立跑满 0-100%
         const wasmURL = await fetchWithProgress('./ffmpeg-core.wasm', '引擎内核', FIXED_ENGINE_SIZE);
         
-        // 重置进度条，进入第二阶段
-        UI.updateProgress("正在加载脚本组件...", 0);
-        
-        // 模拟加载核心 JS 的进度 (占前 20%)
-        UI.updateProgress("正在解析核心组件: ffmpeg-core.js", 10);
-        await new Promise(r => setTimeout(r, 100)); // 视觉缓冲
-        UI.updateProgress("正在解析核心组件: ffmpeg-worker.js", 20);
+        // ==========================================
+        // 阶段一：视觉安慰剂 (Simulated Progress)
+        // 目的：在 WASM 编译卡顿前，先让用户看到密集的进度变化，消除焦虑
+        // ==========================================
+        const fakeSteps = [
+            { txt: "正在进行环境自检...", pct: 5 },
+            { txt: "校验核心文件完整性...", pct: 15 },
+            { txt: "分配虚拟内存空间...", pct: 25 },
+            { txt: "预热 WebAssembly 编译器...", pct: 35 },
+            { txt: "正在编译核心组件 (CPU密集)...", pct: 50 },
+            { txt: "准备启动多线程引擎...", pct: 60 }
+        ];
 
+        for (const step of fakeSteps) {
+            UI.updateProgress(step.txt, step.pct);
+            // 人为制造“快速处理”的视觉感，每步停留 100-200ms
+            await new Promise(r => setTimeout(r, 150)); 
+        }
+
+        // ==========================================
+        // 阶段二：真实加载 (Real Progress)
+        // ==========================================
+        
         // 优化 3/3 阶段：捕获 Worker 启动计数
         let activeWorkerCount = 0; // 真正活跃（已发送消息）的线程数
         const totalWorkers = navigator.hardwareConcurrency || 4; 
         
-        // 初始状态 (20%)
-        UI.updateProgress(`正在启动多线程引擎: 等待内核响应...`, 20);
-
         // 监听 Worker 启动（解耦式监听）
         const originalWorker = window.Worker;
         window.Worker = function(scriptURL, options) {
@@ -119,17 +131,19 @@ async function initCore() {
             // 只有 FFmpeg 的 Worker 才需要监控
             if (scriptURL.toString().includes('ffmpeg')) {
                 // 监听 Worker 的首条消息，代表它真正活了
-                // 使用 { once: true } 确保每个 Worker 只贡献一次进度
                 w.addEventListener('message', () => {
                     activeWorkerCount++;
-                    // 剩余 80% 的进度由线程真实就绪数决定
-                    // 防止 activeWorkerCount 超过 totalWorkers (有些实现可能会重建 Worker)
+                    
+                    // 真实进度映射到 60% - 100% 的区间
+                    // 这样即使编译卡住了，前面的 60% 已经给足了用户信心
+                    const base = 60;
+                    const range = 40;
                     const safeCount = Math.min(activeWorkerCount, totalWorkers);
-                    const initPct = 20 + Math.round((safeCount / totalWorkers) * 80);
+                    const realPct = base + Math.round((safeCount / totalWorkers) * range);
                     
                     UI.updateProgress(
-                        `正在启动多线程引擎: ${safeCount}/${totalWorkers} 线程已就绪`, 
-                        initPct
+                        `正在启动计算单元: ${safeCount}/${totalWorkers} 线程就绪`, 
+                        realPct
                     );
                 }, { once: true });
             }
@@ -141,9 +155,33 @@ async function initCore() {
         // 恢复原始 Worker
         window.Worker = originalWorker;
 
+        // 关键修复：ffmpeg.load() 可能在所有 Worker 发送消息前就 resolve 了
+        // 或者主线程阻塞导致 UI 没来得及渲染。
+        // 这里我们手动等待所有线程就绪，强制让出主线程给 UI 渲染
+        let waitTime = 0;
+        while (activeWorkerCount < totalWorkers && waitTime < 5000) {
+            await new Promise(r => setTimeout(r, 100)); // 让出时间片处理 message 事件
+            waitTime += 100;
+        }
+
         // 视觉优化：强制显示最终线程状态并暂停一下，让用户看清
-        UI.updateProgress(`正在启动多线程引擎: ${totalWorkers}/${totalWorkers} 线程就绪`, 100);
-        await new Promise(r => setTimeout(r, 800));
+        UI.updateProgress(`引擎初始化完毕: ${totalWorkers}/${totalWorkers} 线程就绪`, 100);
+        await new Promise(r => setTimeout(r, 500));
+
+        UI.updateProgress("引擎准备就绪", 100);
+
+        // 关键修复：ffmpeg.load() 可能在所有 Worker 发送消息前就 resolve 了
+        // 或者主线程阻塞导致 UI 没来得及渲染。
+        // 这里我们手动等待所有线程就绪，强制让出主线程给 UI 渲染
+        let waitTime = 0;
+        while (activeWorkerCount < totalWorkers && waitTime < 5000) {
+            await new Promise(r => setTimeout(r, 100)); // 让出时间片处理 message 事件
+            waitTime += 100;
+        }
+
+        // 视觉优化：强制显示最终线程状态并暂停一下，让用户看清
+        UI.updateProgress(`引擎初始化完毕: ${totalWorkers}/${totalWorkers} 线程就绪`, 100);
+        await new Promise(r => setTimeout(r, 500));
 
         UI.updateProgress("引擎准备就绪", 100);
         if (RUN_BTN) { RUN_BTN.disabled = false; RUN_BTN.innerText = "选择文件夹并开始"; }
