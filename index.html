@@ -29,7 +29,7 @@
             try {
                 log("1. 加载主脚本...");
                 const script = document.createElement('script');
-                script.src = '/ffmpeg.min.js'; // 确保这是从 @ffmpeg/ffmpeg@0.12.10 下载的 UMD 文件
+                script.src = '/ffmpeg.js'; // 确保这是从 @ffmpeg/ffmpeg@0.12.10 下载的 UMD 文件
                 document.head.appendChild(script);
                 await new Promise(r => script.onload = r);
 
