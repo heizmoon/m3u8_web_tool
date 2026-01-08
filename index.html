@@ -2,114 +2,101 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <title>M3U8 极速合并 - 离线商用版</title>
-    <script src="ffmpeg.min.js"></script>
+    <title>M3U8 极速合并 - 商业正式版</title>
+    <script src="./ffmpeg.min.js"></script>
     <style>
-        body { font-family: -apple-system, "Helvetica Neue", sans-serif; background: #f4f7f6; display: flex; justify-content: center; padding: 40px; }
-        .card { background: white; padding: 30px; border-radius: 16px; box-shadow: 0 10px 25px rgba(0,0,0,0.05); width: 100%; max-width: 500px; text-align: center; }
-        h2 { color: #1a1a1b; margin-bottom: 8px; }
-        .status-tag { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 12px; margin-bottom: 20px; background: #eee; color: #666; }
-        .btn { background: #007aff; color: white; border: none; padding: 14px 28px; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 0.1s; width: 100%; }
-        .btn:active { transform: scale(0.98); }
-        .btn:disabled { background: #ccc; cursor: not-allowed; }
-        #log { background: #1e1e1e; color: #32d74b; padding: 15px; height: 180px; overflow-y: auto; margin-top: 25px; border-radius: 8px; font-family: "SF Mono", monospace; font-size: 11px; text-align: left; line-height: 1.5; }
+        body { font-family: system-ui, sans-serif; background: #f0f2f5; display: flex; justify-content: center; padding: 40px; }
+        .card { background: white; padding: 30px; border-radius: 12px; box-shadow: 0 4px 20px rgba(0,0,0,0.1); width: 100%; max-width: 500px; text-align: center; }
+        .status-box { padding: 10px; border-radius: 6px; margin-bottom: 20px; font-weight: bold; }
+        .loading { background: #fff7e6; color: #faad14; }
+        .ready { background: #f6ffed; color: #52c41a; }
+        .error { background: #fff1f0; color: #f5222d; }
+        .btn { background: #1890ff; color: white; border: none; padding: 14px 28px; border-radius: 6px; font-size: 16px; cursor: pointer; width: 100%; transition: 0.3s; }
+        .btn:disabled { background: #d9d9d9; cursor: not-allowed; }
+        #log { background: #001529; color: #d6e4ff; padding: 15px; height: 180px; overflow-y: auto; margin-top: 20px; border-radius: 4px; font-family: monospace; font-size: 11px; text-align: left; }
     </style>
 </head>
 <body>
     <div class="card">
-        <h2>🎬 M3U8 工具箱</h2>
-        <div id="status" class="status-tag">正在初始化内核...</div>
-        
-        <button id="runBtn" class="btn" disabled>选择文件夹并开始</button>
-        
-        <div id="log">等待操作日志...</div>
+        <h2>🎬 M3U8 合并工具</h2>
+        <div id="status" class="status-box loading">正在初始化内核...</div>
+        <button id="startBtn" class="btn" disabled>选择本地文件夹</button>
+        <div id="log">准备就绪，请等待内核加载。</div>
     </div>
 
     <script>
-        // 从 FFmpegWASM 对象中提取 FFmpeg 类
         const { FFmpeg } = FFmpegWASM;
         const ffmpeg = new FFmpeg();
 
-        const logEl = document.getElementById('log');
-        const btn = document.getElementById('runBtn');
         const statusEl = document.getElementById('status');
+        const logEl = document.getElementById('log');
+        const startBtn = document.getElementById('startBtn');
 
-        const addLog = (msg) => {
-            logEl.innerText += `\n> ${msg}`;
+        const addLog = (m) => {
+            logEl.innerText += `\n> ${m}`;
             logEl.scrollTop = logEl.scrollHeight;
         };
 
-        // 核心初始化逻辑
         async function init() {
             try {
-                // 显式指定本地路径，解决 404 和拦截问题
+                // 关键点：显式定位所有本地文件
                 const baseURL = window.location.origin;
                 await ffmpeg.load({
                     coreURL: `${baseURL}/ffmpeg-core.js`,
                     wasmURL: `${baseURL}/ffmpeg-core.wasm`,
                     workerURL: `${baseURL}/ffmpeg-core.worker.js`
                 });
-                
-                statusEl.innerText = "● 内核已就绪";
-                statusEl.style.background = "#e3f9eb";
-                statusEl.style.color = "#28a745";
-                btn.disabled = false;
-                addLog("FFmpeg 内核已从本地仓库成功加载。");
+
+                statusEl.className = 'status-box ready';
+                statusEl.innerText = '✅ 内核就绪 (离线模式)';
+                startBtn.disabled = false;
+                addLog("FFmpeg 核心加载成功！可以开始操作。");
             } catch (e) {
-                statusEl.innerText = "● 初始化失败";
-                statusEl.style.background = "#fff2f0";
-                statusEl.style.color = "#ff4d4f";
-                addLog("失败原因: 浏览器可能禁用了 WebAssembly 或跨域隔离。");
+                statusEl.className = 'status-box error';
+                statusEl.innerText = '❌ 加载失败';
+                addLog("失败！请检查：1. 是否有 vercel.json 2. 浏览器是否支持 SharedArrayBuffer 3. 文件是否全在仓库根目录。");
                 console.error(e);
             }
         }
 
-        document.getElementById('runBtn').onclick = async () => {
+        startBtn.onclick = async () => {
             try {
                 const handle = await window.showDirectoryPicker();
-                btn.disabled = true;
-                addLog(`正在访问文件夹: ${handle.name}`);
+                startBtn.disabled = true;
+                addLog(`已获得文件夹: ${handle.name}`);
 
-                // 1. 读取主 index.m3u8 并写入内存
-                const m3u8File = await (await handle.getFileHandle('index.m3u8')).getFile();
-                await ffmpeg.writeFile('index.m3u8', new Uint8Array(await m3u8File.arrayBuffer()));
-                addLog("载入 index.m3u8 成功");
+                // 写入 index.m3u8
+                const m3u8H = await handle.getFileHandle('index.m3u8');
+                await ffmpeg.writeFile('index.m3u8', new Uint8Array(await (await m3u8H.getFile()).arrayBuffer()));
 
-                // 2. 处理 index 文件夹中的所有 ts/key 文件
+                // 处理子文件夹 index
                 await ffmpeg.createDir('index');
-                const subDir = await handle.getDirectoryHandle('index');
-                addLog("正在扫描 index 目录...");
-                
-                for await (const entry of subDir.values()) {
+                const idxDir = await handle.getDirectoryHandle('index');
+                for await (const entry of idxDir.values()) {
                     if (entry.kind === 'file') {
                         const file = await entry.getFile();
-                        const data = await file.arrayBuffer();
-                        await ffmpeg.writeFile(`index/${entry.name}`, new Uint8Array(data));
+                        await ffmpeg.writeFile(`index/${entry.name}`, new Uint8Array(await file.arrayBuffer()));
+                        addLog(`载入: ${entry.name}`);
                     }
                 }
-                addLog("视频分片载入完毕，开始合并...");
 
-                // 3. 执行合并命令 (对应 image_3db59a.png 中的路径配置)
-                await ffmpeg.exec([
-                    '-allowed_extensions', 'ALL',
-                    '-i', 'index.m3u8',
-                    '-c', 'copy', 'output.mp4'
-                ]);
+                addLog("🚀 开始合并，请勿关闭页面...");
+                // 进度监听
+                ffmpeg.on('log', ({ message }) => { if(message.includes('frame=')) addLog(message); });
 
-                // 4. 生成下载
-                const result = await ffmpeg.readFile('output.mp4');
-                const url = URL.createObjectURL(new Blob([result.buffer], { type: 'video/mp4' }));
-                
+                await ffmpeg.exec(['-i', 'index.m3u8', '-c', 'copy', 'final.mp4']);
+
+                const data = await ffmpeg.readFile('final.mp4');
+                const url = URL.createObjectURL(new Blob([data.buffer], { type: 'video/mp4' }));
                 const a = document.createElement('a');
                 a.href = url;
-                a.download = `${handle.name}_merged.mp4`;
+                a.download = "合并完成.mp4";
                 a.click();
-                
-                addLog("🎉 合并成功！视频已自动开始下载。");
-                btn.disabled = false;
+                addLog("🎉 完成！已触发下载。");
             } catch (err) {
-                addLog(`❌ 出错了: ${err.message}`);
-                btn.disabled = false;
+                addLog("错误: " + err.message);
+            } finally {
+                startBtn.disabled = false;
             }
         };
 
